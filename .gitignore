@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Xcode
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+DerivedData/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.perspectivev3
+!default.perspectivev3
+*.xcworkspace/xcuserdata/
+
+# Pods
+Pods/
+
+# Build
+build/
