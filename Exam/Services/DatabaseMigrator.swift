@@ -8,7 +8,7 @@ enum DatabaseMigrator {
 
     // MARK: - Public
 
-    /// 在 App 啟動時呼叫；DB 未變動則跳過，DB 有更新則重新匯入歷屆題庫（year > 0）。
+    /// 在 App 啟動時呼叫；DB 未變動且資料已存在則跳過，否則匯入歷屆題庫（year > 0）。
     /// 若 CloudKit 已從其他裝置同步歷屆資料，也會跳過匯入以避免重複。
     @MainActor
     static func migrateIfNeeded(context: ModelContext, dbURL: URL) {
@@ -19,12 +19,20 @@ enum DatabaseMigrator {
 
         let version = fileFingerprint(dbURL)
         let stored  = UserDefaults.standard.string(forKey: migrationVersionKey) ?? ""
-        guard version != stored else { return }
 
-        // CloudKit 可能已從另一台裝置同步歷屆題庫，若已有資料則只更新版本號，不重複匯入
+        // 必須先確認資料是否存在，版本相符但題庫為空仍需匯入
+        // （例如：之前在 CloudKit container 匯入後版本號已存，現在換成本地 container 資料是空的）
         let existingCount = (try? context.fetchCount(
             FetchDescriptor<QuestionBankItem>(predicate: #Predicate { $0.year > 0 })
         )) ?? 0
+
+        // 跳過條件：版本相符 AND 已有資料
+        guard version != stored || existingCount == 0 else {
+            print("[Migrator] 版本相符且已有 \(existingCount) 題，跳過匯入")
+            return
+        }
+
+        // 已有資料（可能來自 iCloud）但版本不同：僅更新版本號，不重複匯入
         if existingCount > 0 {
             print("[Migrator] 偵測到 \(existingCount) 題歷屆資料（可能來自 iCloud），跳過本地匯入")
             UserDefaults.standard.set(version, forKey: migrationVersionKey)
@@ -50,7 +58,10 @@ enum DatabaseMigrator {
 
         try? context.save()
         UserDefaults.standard.set(version, forKey: migrationVersionKey)
-        print("[Migrator] 遷移完成，共 \(existingCount) 題（version=\(version)）")
+        let importedCount = (try? context.fetchCount(
+            FetchDescriptor<QuestionBankItem>(predicate: #Predicate { $0.year > 0 })
+        )) ?? 0
+        print("[Migrator] 遷移完成，共 \(importedCount) 題（version=\(version)）")
     }
 
     private static func fileFingerprint(_ url: URL) -> String {
