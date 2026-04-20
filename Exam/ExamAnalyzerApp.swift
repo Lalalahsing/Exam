@@ -41,10 +41,22 @@ struct ExamAnalyzerApp: App {
         deleteAllStoreFiles()
         if let c = makeLocalContainer() { return c }
 
-        // 4. 最後手段：記憶體模式（不 crash，重開 App 資料清空）
+        // 4. 最後手段：記憶體模式（重開 App 資料清空）
+        // 注意：不重用靜態 schema，避免前幾次失敗污染其內部狀態
         print("[App] ⚠️ 退回記憶體模式")
-        let cfg = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        return (try? ModelContainer(for: schema, configurations: cfg))!
+        do {
+            let cfg = ModelConfiguration(isStoredInMemoryOnly: true)
+            return try ModelContainer(
+                for: Exam.self,
+                ExamQuestion.self,
+                QuestionBankItem.self,
+                PracticeSession.self,
+                PracticeAttempt.self,
+                configurations: cfg
+            )
+        } catch {
+            fatalError("[App] 記憶體容器建立失敗，無法繼續：\(error)")
+        }
     }
 
     private static func makeCloudKitContainer() -> ModelContainer? {
@@ -70,17 +82,17 @@ struct ExamAnalyzerApp: App {
         }
     }
 
-    /// 刪除 Application Support 下所有 SwiftData store 檔案
+    /// 遞迴刪除 Application Support 下所有 SwiftData store 檔案
     private static func deleteAllStoreFiles() {
         let fm = FileManager.default
         guard let dir = fm.urls(for: .applicationSupportDirectory,
                                 in: .userDomainMask).first else { return }
-        let files = (try? fm.contentsOfDirectory(
+        guard let enumerator = fm.enumerator(
             at: dir,
             includingPropertiesForKeys: nil,
-            options: .skipsHiddenFiles
-        )) ?? []
-        for url in files {
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        for case let url as URL in enumerator {
             let name = url.lastPathComponent
             if name.hasSuffix(".store") || name.hasSuffix(".store-wal") || name.hasSuffix(".store-shm") {
                 try? fm.removeItem(at: url)
