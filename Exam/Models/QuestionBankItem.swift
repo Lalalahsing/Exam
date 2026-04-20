@@ -24,7 +24,10 @@ final class QuestionBankItem {
     var explanation: String     // AI 解析
     var firstAttemptCorrect: Bool?
     var createdAt: Date
-    @Relationship(deleteRule: .cascade) var attempts: [PracticeAttempt]?
+    /// 練習累計次數（直接存儲，不使用 relationship 以避免 SwiftData 雙重 owner 問題）
+    var attemptCount: Int = 0
+    /// 練習累計答對次數
+    var correctAttemptCount: Int = 0
 
     init(sourceExamId: UUID, year: Int = 0, subject: String, volume: String,
          chapterNum: Int, chapterName: String, topic: String,
@@ -57,21 +60,18 @@ final class QuestionBankItem {
         self.explanation = explanation
         self.firstAttemptCorrect = firstAttemptCorrect
         self.createdAt = Date()
-        self.attempts = []
+        self.attemptCount = 0
+        self.correctAttemptCount = 0
     }
 
-    private var attemptList: [PracticeAttempt] { attempts ?? [] }
-    var attemptCount: Int { attemptList.count }
-
     var errorRate: Double {
-        guard !attemptList.isEmpty else { return 0 }
-        let wrong = attemptList.filter { !$0.isCorrect }.count
-        return Double(wrong) / Double(attemptList.count)
+        guard attemptCount > 0 else { return 0 }
+        return Double(attemptCount - correctAttemptCount) / Double(attemptCount)
     }
 
     var practiceWeight: Double {
         var weight: Double
-        if attemptList.isEmpty {
+        if attemptCount == 0 {
             weight = 55.0
         } else if errorRate == 0 {
             weight = 10.0

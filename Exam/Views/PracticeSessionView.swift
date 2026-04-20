@@ -296,7 +296,8 @@ struct PracticeSessionView: View {
         let attempt = PracticeAttempt(questionId: question.id, isCorrect: isCorrect)
         attempt.session = session
         session.attempts?.append(attempt)
-        question.attempts?.append(attempt)
+        question.attemptCount += 1
+        if isCorrect { question.correctAttemptCount += 1 }
         modelContext.insert(attempt)
         if isCorrect { session.correctCount += 1 }
 

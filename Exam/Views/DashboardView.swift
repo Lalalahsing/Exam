@@ -39,10 +39,10 @@ struct DashboardView: View {
         HStack(spacing: 0) {
             StatCell(value: "\(allItems.count)", label: "題庫總題", color: .blue)
             Divider().frame(height: 50)
-            let totalAttempts = allItems.flatMap { $0.attempts ?? [] }.count
+            let totalAttempts = allItems.reduce(0) { $0 + $1.attemptCount }
             StatCell(value: "\(totalAttempts)", label: "總練習次", color: .purple)
             Divider().frame(height: 50)
-            let correct = allItems.flatMap { $0.attempts ?? [] }.filter { $0.isCorrect }.count
+            let correct = allItems.reduce(0) { $0 + $1.correctAttemptCount }
             let rate = totalAttempts > 0 ? Double(correct) / Double(totalAttempts) : 0
             StatCell(value: String(format: "%.0f%%", rate * 100), label: "整體正確率",
                      color: rate >= 0.8 ? .green : rate >= 0.6 ? .orange : .red)
@@ -224,9 +224,9 @@ struct DashboardView: View {
                             let questions = itemsForSubject.filter {
                                 $0.volume == entry.volume && $0.chapterNum == entry.chapter.chapterNum
                             }
-                            let attempts = questions.flatMap { $0.attempts ?? [] }
-                            let correct = attempts.filter { $0.isCorrect }.count
-                            let rate: Double = attempts.isEmpty ? -1 : Double(correct) / Double(attempts.count)
+                            let total  = questions.reduce(0) { $0 + $1.attemptCount }
+                            let correct = questions.reduce(0) { $0 + $1.correctAttemptCount }
+                            let rate: Double = total == 0 ? -1 : Double(correct) / Double(total)
                             ChapterCell(
                                 volume: entry.volume,
                                 chapterNum: entry.chapter.chapterNum,
@@ -292,11 +292,11 @@ struct DashboardView: View {
     private var subjectStats: [SubjectStat] {
         subjects.compactMap { subject in
             let items = allItems.filter { $0.subject == subject }
-            let attempts = items.flatMap { $0.attempts ?? [] }
-            guard !attempts.isEmpty else { return nil }
-            let correct = attempts.filter { $0.isCorrect }.count
-            let rate = Double(correct) / Double(attempts.count)
-            return SubjectStat(subject: subject, rate: rate, correct: correct, total: attempts.count)
+            let total  = items.reduce(0) { $0 + $1.attemptCount }
+            guard total > 0 else { return nil }
+            let correct = items.reduce(0) { $0 + $1.correctAttemptCount }
+            let rate = Double(correct) / Double(total)
+            return SubjectStat(subject: subject, rate: rate, correct: correct, total: total)
         }
     }
 
@@ -308,10 +308,10 @@ struct DashboardView: View {
                 let questions = items.filter {
                     $0.volume == entry.volume && $0.chapterNum == entry.chapter.chapterNum
                 }
-                let attempts = questions.flatMap { $0.attempts ?? [] }
-                guard !attempts.isEmpty else { continue }
-                let correct = attempts.filter { $0.isCorrect }.count
-                let rate = Double(correct) / Double(attempts.count)
+                let total   = questions.reduce(0) { $0 + $1.attemptCount }
+                guard total > 0 else { continue }
+                let correct = questions.reduce(0) { $0 + $1.correctAttemptCount }
+                let rate = Double(correct) / Double(total)
                 guard rate < 0.6 else { continue }
                 result.append(WeakChapterData(
                     key: "\(subject)-\(entry.volume)-\(entry.chapter.chapterNum)",
@@ -320,7 +320,7 @@ struct DashboardView: View {
                     chapterName: "第\(entry.chapter.chapterNum)章 \(entry.chapter.name)",
                     rate: rate,
                     correct: correct,
-                    total: attempts.count
+                    total: total
                 ))
             }
         }
