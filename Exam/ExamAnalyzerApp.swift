@@ -42,18 +42,16 @@ struct ExamAnalyzerApp: App {
         if let c = makeLocalContainer() { return c }
 
         // 4. 最後手段：記憶體模式（重開 App 資料清空）
-        // 注意：不重用靜態 schema，避免前幾次失敗污染其內部狀態
+        // isStoredInMemoryOnly + cloudKitDatabase: .none 雙重保險，
+        // 防止 .automatic 預設值在有 CloudKit entitlement 時觸發 loadIssueModelContainer
         print("[App] ⚠️ 退回記憶體模式")
         do {
-            let cfg = ModelConfiguration(isStoredInMemoryOnly: true)
-            return try ModelContainer(
-                for: Exam.self,
-                ExamQuestion.self,
-                QuestionBankItem.self,
-                PracticeSession.self,
-                PracticeAttempt.self,
-                configurations: cfg
+            let cfg = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: true,
+                cloudKitDatabase: .none
             )
+            return try ModelContainer(for: schema, configurations: cfg)
         } catch {
             fatalError("[App] 記憶體容器建立失敗，無法繼續：\(error)")
         }
@@ -73,7 +71,9 @@ struct ExamAnalyzerApp: App {
 
     private static func makeLocalContainer() -> ModelContainer? {
         do {
-            let c = try ModelContainer(for: schema)
+            // cloudKitDatabase: .none 明確停用 CloudKit，避免觸發 loadIssueModelContainer
+            let cfg = ModelConfiguration(schema: schema, cloudKitDatabase: .none)
+            let c = try ModelContainer(for: schema, configurations: cfg)
             print("[App] 本地容器建立成功")
             return c
         } catch {
