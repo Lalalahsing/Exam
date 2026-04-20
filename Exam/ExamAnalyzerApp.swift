@@ -6,9 +6,7 @@ struct ExamAnalyzerApp: App {
     private let container: ModelContainer
 
     init() {
-        // iCloud API Key 同步
         _ = AppSettings.shared
-        // Container 只建立一次，避免每次 body 重繪重複初始化
         container = Self.buildContainer()
     }
 
@@ -19,7 +17,7 @@ struct ExamAnalyzerApp: App {
         .modelContainer(container)
     }
 
-    // MARK: - Container 建立
+    // MARK: - Schema
 
     private static let schema = Schema([
         Exam.self,
@@ -29,38 +27,65 @@ struct ExamAnalyzerApp: App {
         PracticeAttempt.self,
     ])
 
+    // MARK: - Container 建立（絕不 crash）
+
     private static func buildContainer() -> ModelContainer {
         // 1. 嘗試 CloudKit 版
-        do {
-            let config = ModelConfiguration(schema: schema, cloudKitDatabase: .automatic)
-            return try ModelContainer(for: schema, configurations: config)
-        } catch {
-            print("[App] CloudKit 初始化失敗，改用本地儲存：\(error)")
-        }
+        if let c = makeCloudKitContainer() { return c }
 
-        // 2. 退回本地儲存
+        // 2. 嘗試本地版
+        if let c = makeLocalContainer() { return c }
+
+        // 3. 清除舊 Store 後重試本地版
+        print("[App] 清除舊 Store 並重建…")
+        deleteAllStoreFiles()
+        if let c = makeLocalContainer() { return c }
+
+        // 4. 最後手段：記憶體模式（不 crash，重開 App 資料清空）
+        print("[App] ⚠️ 退回記憶體模式")
+        let cfg = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        return (try? ModelContainer(for: schema, configurations: cfg))!
+    }
+
+    private static func makeCloudKitContainer() -> ModelContainer? {
         do {
-            return try ModelContainer(for: schema)
+            let cfg = ModelConfiguration(schema: schema, cloudKitDatabase: .automatic)
+            let c = try ModelContainer(for: schema, configurations: cfg)
+            print("[App] CloudKit 容器建立成功")
+            return c
         } catch {
-            // 3. Schema 版本不相容（例如欄位結構變更）→ 清除舊 Store 重建
-            print("[App] 本地 Store 載入失敗，清除後重建：\(error)")
-            clearLocalStore()
-            // 清除後必定可以建立，若仍失敗代表程式碼本身有問題
-            return try! ModelContainer(for: schema)
+            print("[App] CloudKit 不可用：\(error)")
+            return nil
         }
     }
 
-    /// 刪除舊版 SwiftData persistent store（schema 不相容時使用）
-    private static func clearLocalStore() {
+    private static func makeLocalContainer() -> ModelContainer? {
+        do {
+            let c = try ModelContainer(for: schema)
+            print("[App] 本地容器建立成功")
+            return c
+        } catch {
+            print("[App] 本地容器失敗：\(error)")
+            return nil
+        }
+    }
+
+    /// 刪除 Application Support 下所有 SwiftData store 檔案
+    private static func deleteAllStoreFiles() {
         let fm = FileManager.default
-        guard let appSupport = fm.urls(for: .applicationSupportDirectory,
-                                       in: .userDomainMask).first else { return }
-        for name in ["default.store", "default.store-wal", "default.store-shm"] {
-            let url = appSupport.appendingPathComponent(name)
-            if fm.fileExists(atPath: url.path) {
+        guard let dir = fm.urls(for: .applicationSupportDirectory,
+                                in: .userDomainMask).first else { return }
+        let files = (try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil,
+            options: .skipsHiddenFiles
+        )) ?? []
+        for url in files {
+            let name = url.lastPathComponent
+            if name.hasSuffix(".store") || name.hasSuffix(".store-wal") || name.hasSuffix(".store-shm") {
                 try? fm.removeItem(at: url)
+                print("[App] 已刪除：\(name)")
             }
         }
-        print("[App] 已清除舊 SwiftData Store")
     }
 }
