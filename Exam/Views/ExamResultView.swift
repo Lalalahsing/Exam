@@ -7,10 +7,13 @@ struct ExamResultView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                // 摘要卡片
                 summaryCard
 
-                // 分頁
+                // AI 備註（若有）
+                if !exam.notes.isEmpty {
+                    notesCard
+                }
+
                 Picker("檢視", selection: $selectedTab) {
                     Text("題目列表").tag(0)
                     Text("章節分析").tag(1)
@@ -35,7 +38,7 @@ struct ExamResultView: View {
 
     private var summaryCard: some View {
         HStack(spacing: 0) {
-            StatCell(value: "\(exam.questions.count)", label: "總題數", color: .blue)
+            StatCell(value: "\((exam.questions ?? []).count)", label: "總題數", color: .blue)
             Divider().frame(height: 50)
             StatCell(value: "\(exam.correctCount)", label: "答對", color: .green)
             Divider().frame(height: 50)
@@ -53,11 +56,27 @@ struct ExamResultView: View {
         .padding(.top, 8)
     }
 
+    // MARK: - AI Notes
+
+    private var notesCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("AI 分析備註", systemImage: "sparkles")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+            Text(exam.notes)
+                .font(.subheadline)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal)
+    }
+
     // MARK: - Questions
 
     private var questionsSection: some View {
         LazyVStack(spacing: 10) {
-            ForEach(exam.questions.sorted(by: { $0.number < $1.number })) { q in
+            ForEach((exam.questions ?? []).sorted(by: { $0.number < $1.number })) { q in
                 QuestionCard(question: q)
             }
         }
@@ -67,10 +86,45 @@ struct ExamResultView: View {
     // MARK: - Chapter Analysis
 
     private var chapterSection: some View {
-        let grouped = Dictionary(grouping: exam.questions) { "\($0.volume) 第\($0.chapterNum)章 \($0.chapterName)" }
+        let qs = exam.questions ?? []
+        let wrongQuestions = qs.filter { $0.isCorrect == false }
+        let wrongGrouped = Dictionary(grouping: wrongQuestions) {
+            "\($0.volume) 第\($0.chapterNum)章 \($0.chapterName)"
+        }
+        let sortedWrong = wrongGrouped.sorted { $0.value.count > $1.value.count }
+
+        let allGrouped = Dictionary(grouping: qs) {
+            "\($0.volume) 第\($0.chapterNum)章 \($0.chapterName)"
+        }
+
         return LazyVStack(spacing: 10) {
-            ForEach(grouped.keys.sorted(), id: \.self) { key in
-                let qs = grouped[key]!
+            // 建議重點複習
+            if !sortedWrong.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("建議重點複習", systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.orange)
+
+                    ForEach(sortedWrong.prefix(5), id: \.key) { key, qs in
+                        HStack {
+                            Text(key)
+                                .font(.caption)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text("答錯 \(qs.count) 題")
+                                .font(.caption.bold())
+                                .foregroundStyle(.red)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                .padding()
+                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            }
+
+            // 各章節統計
+            ForEach(allGrouped.keys.sorted(), id: \.self) { key in
+                let qs = allGrouped[key]!
                 let correct = qs.filter { $0.isCorrect == true }.count
                 let total = qs.filter { $0.isCorrect != nil }.count
                 ChapterStatRow(title: key, correct: correct, total: total, questionCount: qs.count)
@@ -89,7 +143,6 @@ private struct QuestionCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
-                // 答對/錯標記
                 if let correct = question.isCorrect {
                     Image(systemName: correct ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundStyle(correct ? .green : .red)
@@ -120,7 +173,6 @@ private struct QuestionCard: View {
 
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {
-                    // 選項
                     if let a = question.optionA {
                         OptionRow(key: "A", text: a, correctKey: question.correctAnswer, studentKey: question.studentAnswer)
                     }
@@ -134,7 +186,6 @@ private struct QuestionCard: View {
                         OptionRow(key: "D", text: d, correctKey: question.correctAnswer, studentKey: question.studentAnswer)
                     }
                     Divider()
-                    // 課綱資訊
                     HStack {
                         Label("\(question.volume) 第\(question.chapterNum)章 \(question.chapterName)", systemImage: "book.closed.fill")
                         Spacer()
@@ -142,10 +193,21 @@ private struct QuestionCard: View {
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
                     if !question.topic.isEmpty {
                         Text("知識點：\(question.topic)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+
+                    // 辨識信心
+                    if !question.confidence.isEmpty {
+                        HStack(spacing: 4) {
+                            Text("辨識信心：")
+                                .foregroundStyle(.secondary)
+                            ConfidenceBadge(confidence: question.confidence)
+                        }
+                        .font(.caption)
                     }
                 }
             }
@@ -180,6 +242,37 @@ private struct OptionRow: View {
             if isCorrect { Image(systemName: "checkmark").foregroundStyle(.green).font(.caption2) }
             if isStudent && !isCorrect { Image(systemName: "arrow.left").foregroundStyle(.red).font(.caption2) }
         }
+    }
+}
+
+private struct ConfidenceBadge: View {
+    let confidence: String
+
+    private var label: String {
+        switch confidence {
+        case "high": return "高"
+        case "medium": return "中"
+        case "low": return "低"
+        default: return confidence
+        }
+    }
+    private var color: Color {
+        switch confidence {
+        case "high": return .green
+        case "medium": return .orange
+        case "low": return .red
+        default: return .gray
+        }
+    }
+
+    var body: some View {
+        Text(label)
+            .font(.caption2.bold())
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.15))
+            .foregroundStyle(color)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
 

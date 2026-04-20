@@ -36,8 +36,11 @@ struct PracticeSetupView: View {
             }
 
             Section {
-                Stepper("題數：\(questionCount) 題",
-                        value: $questionCount, in: 1...min(poolCount, 50), step: 5)
+                let upper = max(1, min(poolCount, 50))
+                let safeCount = max(1, min(questionCount, upper))
+                Stepper("題數：\(safeCount) 題",
+                        value: Binding(get: { safeCount }, set: { questionCount = $0 }),
+                        in: 1...upper, step: 5)
                     .disabled(poolCount == 0)
             } header: {
                 Text("出題數量")
@@ -58,10 +61,11 @@ struct PracticeSetupView: View {
             Section {
                 Button {
                     guard poolCount > 0 else { return }
+                    let upper = max(1, min(poolCount, 50))
                     navigateToSession = PracticeSessionConfig(
                         subject: selectedSubject,
                         volume: selectedVolume == "全部" ? nil : selectedVolume,
-                        count: questionCount
+                        count: max(1, min(questionCount, upper))
                     )
                 } label: {
                     Label("開始練習", systemImage: "play.fill")

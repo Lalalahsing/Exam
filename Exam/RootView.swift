@@ -2,17 +2,10 @@ import SwiftUI
 import SwiftData
 
 struct RootView: View {
-    @AppStorage("anthropicAPIKey") private var apiKey = ""
     @Environment(\.modelContext) private var modelContext
 
     var body: some View {
-        Group {
-            if apiKey.isEmpty {
-                OnboardingView()
-            } else {
-                MainTabView()
-            }
-        }
+        MainTabView()
         .task {
             // 舊版 SQLite 資料一次性遷移
             if let dbURL = legacyDatabaseURL() {
@@ -22,11 +15,17 @@ struct RootView: View {
     }
 
     private func legacyDatabaseURL() -> URL? {
+        guard let bundleURL = Bundle.main.url(forResource: "exam_data", withExtension: "db") else { return nil }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dest = docs.appendingPathComponent("exam_data.db")
-        if FileManager.default.fileExists(atPath: dest.path) { return dest }
-        guard let bundleURL = Bundle.main.url(forResource: "exam_data", withExtension: "db") else { return nil }
-        try? FileManager.default.copyItem(at: bundleURL, to: dest)
+
+        let bundleSize = (try? FileManager.default.attributesOfItem(atPath: bundleURL.path)[.size] as? Int) ?? 0
+        let destSize   = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size]   as? Int) ?? -1
+        if bundleSize != destSize {
+            try? FileManager.default.removeItem(at: dest)
+            try? FileManager.default.copyItem(at: bundleURL, to: dest)
+        }
+
         return FileManager.default.fileExists(atPath: dest.path) ? dest : nil
     }
 }

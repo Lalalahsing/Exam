@@ -57,27 +57,28 @@ struct AnthropicService: Sendable {
     static let shared = AnthropicService()
     private let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
 
-    /// imageData：由呼叫端（@MainActor）壓縮後傳入，不在此處接觸 UIKit
-    func analyzeExam(imageData: Data, apiKey: String) async throws -> ExamAnalysisResponse {
-        let base64 = imageData.base64EncodedString()
+    /// imageDatas：由呼叫端（@MainActor）壓縮後傳入，支援多張（多頁考卷）
+    func analyzeExam(imageDatas: [Data], apiKey: String) async throws -> ExamAnalysisResponse {
         let prompt = buildPrompt()
+
+        var contentBlocks: [[String: Any]] = imageDatas.map { data in
+            [
+                "type": "image",
+                "source": [
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": data.base64EncodedString()
+                ]
+            ]
+        }
+        contentBlocks.append(["type": "text", "text": prompt])
 
         let requestBody: [String: Any] = [
             "model": "claude-sonnet-4-6",
             "max_tokens": 8192,
             "messages": [[
                 "role": "user",
-                "content": [
-                    [
-                        "type": "image",
-                        "source": [
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": base64
-                        ]
-                    ],
-                    ["type": "text", "text": prompt]
-                ]
+                "content": contentBlocks
             ]]
         ]
 

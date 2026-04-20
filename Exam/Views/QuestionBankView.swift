@@ -16,6 +16,9 @@ struct QuestionBankView: View {
         return ["全部"] + s.sorted()
     }
 
+    private var practicedCount: Int { allItems.filter { $0.attemptCount > 0 }.count }
+    private var withErrorsCount: Int { allItems.filter { $0.errorRate > 0 || $0.firstAttemptCorrect == false }.count }
+
     private var filtered: [QuestionBankItem] {
         allItems.filter { item in
             let matchSubject = selectedSubject == "全部" || item.subject == selectedSubject
@@ -38,12 +41,24 @@ struct QuestionBankView: View {
                 )
             } else {
                 List {
+                    // 統計卡片
+                    Section {
+                        HStack(spacing: 0) {
+                            StatCell(value: "\(allItems.count)", label: "總題數", color: .blue)
+                            Divider().frame(height: 40)
+                            StatCell(value: "\(practicedCount)", label: "已練習", color: .purple)
+                            Divider().frame(height: 40)
+                            StatCell(value: "\(withErrorsCount)", label: "有錯誤", color: .red)
+                        }
+                        .padding(.vertical, 4)
+                    }
+
                     // 篩選列
                     Section {
                         filterRow
                     }
 
-                    // 統計
+                    // 篩選結果數
                     Section {
                         HStack {
                             Label("共 \(filtered.count) 題", systemImage: "doc.text")
@@ -86,7 +101,6 @@ struct QuestionBankView: View {
     private var filterRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                // 科目
                 Menu {
                     ForEach(subjects, id: \.self) { s in
                         Button(s) { selectedSubject = s }
@@ -97,7 +111,6 @@ struct QuestionBankView: View {
                                icon: "books.vertical")
                 }
 
-                // 冊次
                 Menu {
                     Button("全部") { selectedVolume = "全部" }
                     ForEach(CurriculumData.volumes, id: \.self) { v in
@@ -109,7 +122,6 @@ struct QuestionBankView: View {
                                icon: "calendar")
                 }
 
-                // 僅顯示錯題
                 Button {
                     wrongOnly.toggle()
                 } label: {
@@ -135,6 +147,18 @@ struct QuestionBankRow: View {
                     .lineLimit(2)
                 HStack(spacing: 8) {
                     Text("\(item.volume) 第\(item.chapterNum)章")
+                    if let yearLabel = item.yearLabel {
+                        Text(yearLabel).foregroundStyle(.blue)
+                    }
+                    if item.passRate >= 0 {
+                        Text("通過率\(Int(item.passRate * 100))%")
+                            .foregroundStyle(item.passRate >= 0.8 ? .green : item.passRate >= 0.5 ? .orange : .red)
+                    }
+                    // 原考結果標記
+                    if let correct = item.firstAttemptCorrect {
+                        Text(correct ? "原考✓" : "原考✗")
+                            .foregroundStyle(correct ? .green : .red)
+                    }
                     if item.attemptCount > 0 {
                         Text("練習 \(item.attemptCount) 次")
                         if item.errorRate > 0 {
@@ -163,7 +187,6 @@ struct QuestionDetailSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // 題目
                     VStack(alignment: .leading, spacing: 8) {
                         Text("題目").font(.caption.bold()).foregroundStyle(.secondary)
                         Text(item.questionText).font(.body)
@@ -172,7 +195,6 @@ struct QuestionDetailSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
 
-                    // 選項
                     if let a = item.optionA {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("選項").font(.caption.bold()).foregroundStyle(.secondary)
@@ -196,20 +218,44 @@ struct QuestionDetailSheet: View {
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     }
 
-                    // 課綱資訊
                     VStack(alignment: .leading, spacing: 10) {
                         Text("課綱資訊").font(.caption.bold()).foregroundStyle(.secondary)
+                        if let yearLabel = item.yearLabel {
+                            LabeledContent("來源", value: yearLabel)
+                        }
                         LabeledContent("科目", value: item.subject)
                         LabeledContent("冊次", value: item.volume)
                         LabeledContent("章節", value: "第\(item.chapterNum)章 \(item.chapterName)")
                         LabeledContent("知識點", value: item.topic)
                         LabeledContent("難度", value: item.difficultyLabel)
+                        if item.passRate >= 0 {
+                            LabeledContent("全國通過率",
+                                           value: String(format: "%.0f%%（%@）",
+                                                         item.passRate * 100,
+                                                         item.passRateLabel ?? ""))
+                        }
+                        if let correct = item.firstAttemptCorrect {
+                            LabeledContent("原考結果", value: correct ? "✓ 答對" : "✗ 答錯")
+                        }
                     }
                     .font(.subheadline)
                     .padding()
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
 
-                    // 練習記錄
+                    // 解析
+                    if !item.explanation.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("解析", systemImage: "lightbulb.fill")
+                                .font(.caption.bold())
+                                .foregroundStyle(.orange)
+                            Text(item.explanation)
+                                .font(.subheadline)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                    }
+
                     if item.attemptCount > 0 {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("練習紀錄").font(.caption.bold()).foregroundStyle(.secondary)

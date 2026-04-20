@@ -9,7 +9,7 @@ final class Exam {
     var createdAt: Date
     var rawJson: String
     var notes: String
-    @Relationship(deleteRule: .cascade) var questions: [ExamQuestion]
+    @Relationship(deleteRule: .cascade) var questions: [ExamQuestion]?
 
     init(subject: String, imageName: String, rawJson: String, notes: String = "") {
         self.id = UUID()
@@ -21,9 +21,10 @@ final class Exam {
         self.questions = []
     }
 
-    var correctCount: Int { questions.filter { $0.isCorrect == true }.count }
-    var wrongCount: Int { questions.filter { $0.isCorrect == false }.count }
-    var totalAnswered: Int { questions.filter { $0.isCorrect != nil }.count }
+    private var questionList: [ExamQuestion] { questions ?? [] }
+    var correctCount: Int { questionList.filter { $0.isCorrect == true }.count }
+    var wrongCount: Int { questionList.filter { $0.isCorrect == false }.count }
+    var totalAnswered: Int { questionList.filter { $0.isCorrect != nil }.count }
     var accuracyRate: Double {
         guard totalAnswered > 0 else { return 0 }
         return Double(correctCount) / Double(totalAnswered)

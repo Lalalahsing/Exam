@@ -2,24 +2,44 @@ import Foundation
 import SwiftData
 import SQLite3
 
-/// 將舊版 SQLite (exam_data.db) 資料一次性遷移至 SwiftData
+/// 將 SQLite (exam_data.db) 資料遷移至 SwiftData；當 DB 檔案異動時自動重新匯入歷屆題庫
 enum DatabaseMigrator {
-    private static let migrationKey = "sqlite_migration_completed"
+    private static let migrationVersionKey = "sqlite_migration_version"
 
     // MARK: - Public
 
-    /// 在 App 啟動時呼叫；若已遷移過則直接 return
+    /// 在 App 啟動時呼叫；DB 未變動則跳過，DB 有更新則重新匯入歷屆題庫（year > 0）。
+    /// 若 CloudKit 已從其他裝置同步歷屆資料，也會跳過匯入以避免重複。
     @MainActor
     static func migrateIfNeeded(context: ModelContext, dbURL: URL) {
-        guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
         guard FileManager.default.fileExists(atPath: dbURL.path) else {
-            UserDefaults.standard.set(true, forKey: migrationKey)
+            print("[Migrator] 找不到 exam_data.db，跳過遷移")
             return
+        }
+
+        let version = fileFingerprint(dbURL)
+        let stored  = UserDefaults.standard.string(forKey: migrationVersionKey) ?? ""
+        guard version != stored else { return }
+
+        // CloudKit 可能已從另一台裝置同步歷屆題庫，若已有資料則只更新版本號，不重複匯入
+        let existingCount = (try? context.fetchCount(
+            FetchDescriptor<QuestionBankItem>(predicate: #Predicate { $0.year > 0 })
+        )) ?? 0
+        if existingCount > 0 {
+            print("[Migrator] 偵測到 \(existingCount) 題歷屆資料（可能來自 iCloud），跳過本地匯入")
+            UserDefaults.standard.set(version, forKey: migrationVersionKey)
+            return
+        }
+
+        if !stored.isEmpty {
+            print("[Migrator] 題庫版本更新，清除舊歷屆資料...")
+            try? context.delete(model: QuestionBankItem.self, where: #Predicate { $0.year > 0 })
+            try? context.save()
         }
 
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbURL.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            print("[Migrator] 無法開啟 SQLite: \(String(cString: sqlite3_errmsg(db)))")
+            print("[Migrator] 無法開啟 SQLite：\(String(cString: sqlite3_errmsg(db)))")
             return
         }
         defer { sqlite3_close(db) }
@@ -29,8 +49,13 @@ enum DatabaseMigrator {
         migratePracticeSessions(db: db, context: context)
 
         try? context.save()
-        UserDefaults.standard.set(true, forKey: migrationKey)
-        print("[Migrator] 遷移完成")
+        UserDefaults.standard.set(version, forKey: migrationVersionKey)
+        print("[Migrator] 遷移完成，共 \(existingCount) 題（version=\(version)）")
+    }
+
+    private static func fileFingerprint(_ url: URL) -> String {
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        return "\(size)"
     }
 
     // MARK: - Private helpers
@@ -81,7 +106,7 @@ enum DatabaseMigrator {
                         confidence: q.confidence
                     )
                     eq.exam = exam
-                    exam.questions.append(eq)
+                    exam.questions?.append(eq)
                 }
             }
 
@@ -93,13 +118,24 @@ enum DatabaseMigrator {
 
     @MainActor
     private static func migrateQuestionBank(db: OpaquePointer?, context: ModelContext, examIdMap: [Int64: UUID]) {
-        let sql = """
+        // 檢查是否有新欄位（歷屆題庫版 schema）
+        let hasNewColumns = columnExists(db: db, table: "question_bank", column: "year")
+
+        let sql = hasNewColumns ? """
+            SELECT source_exam_id, subject, volume, chapter_num, chapter_name, topic,
+                   question_num, question_text, question_type,
+                   option_a, option_b, option_c, option_d,
+                   correct_answer, difficulty, first_attempt_correct, created_at,
+                   year, pass_rate, explanation
+            FROM question_bank
+        """ : """
             SELECT source_exam_id, subject, volume, chapter_num, chapter_name, topic,
                    question_num, question_text, question_type,
                    option_a, option_b, option_c, option_d,
                    correct_answer, difficulty, first_attempt_correct, created_at
             FROM question_bank
         """
+
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(stmt) }
@@ -111,8 +147,14 @@ enum DatabaseMigrator {
             let firstAttemptRaw = sqlite3_column_type(stmt, 15) == SQLITE_NULL
                 ? nil : sqlite3_column_int(stmt, 15) == 1
 
+            let year        = hasNewColumns ? Int(sqlite3_column_int(stmt, 17)) : 0
+            let passRateRaw = hasNewColumns && sqlite3_column_type(stmt, 18) != SQLITE_NULL
+                ? sqlite3_column_double(stmt, 18) : -1.0
+            let explanation = hasNewColumns ? columnText(stmt, 19) : ""
+
             let item = QuestionBankItem(
                 sourceExamId: sourceExamId,
+                year:          year,
                 subject:       columnText(stmt, 1),
                 volume:        columnText(stmt, 2),
                 chapterNum:    Int(sqlite3_column_int(stmt, 3)),
@@ -126,12 +168,25 @@ enum DatabaseMigrator {
                 optionC:       optionalText(stmt, 11),
                 optionD:       optionalText(stmt, 12),
                 correctAnswer: optionalText(stmt, 13),
+                passRate:      passRateRaw,
                 difficulty:    columnText(stmt, 14),
+                explanation:   explanation,
                 firstAttemptCorrect: firstAttemptRaw
             )
             item.createdAt = parseDate(columnText(stmt, 16)) ?? Date()
             context.insert(item)
         }
+    }
+
+    private static func columnExists(db: OpaquePointer?, table: String, column: String) -> Bool {
+        let sql = "PRAGMA table_info(\(table))"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(stmt) }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if columnText(stmt, 1) == column { return true }
+        }
+        return false
     }
 
     @MainActor
@@ -174,7 +229,7 @@ enum DatabaseMigrator {
                 let attempt = PracticeAttempt(questionId: UUID(), isCorrect: isCorrect)
                 attempt.attemptedAt = parseDate(attempted) ?? Date()
                 attempt.session = session
-                session.attempts.append(attempt)
+                session.attempts?.append(attempt)
                 context.insert(attempt)
             }
         }

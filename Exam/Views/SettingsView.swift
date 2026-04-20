@@ -56,6 +56,7 @@ struct SettingsView: View {
                     Label("清除 API Key", systemImage: "trash")
                 }
             }
+
         }
         .navigationTitle("設定")
         .alert("確認清除", isPresented: $showResetAlert) {

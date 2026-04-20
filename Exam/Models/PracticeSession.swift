@@ -10,7 +10,7 @@ final class PracticeSession {
     var correctCount: Int
     var createdAt: Date
     var finishedAt: Date?
-    @Relationship(deleteRule: .cascade) var attempts: [PracticeAttempt]
+    @Relationship(deleteRule: .cascade) var attempts: [PracticeAttempt]?
 
     init(subject: String, volumeFilter: String? = nil, questionCount: Int) {
         self.id = UUID()

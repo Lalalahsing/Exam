@@ -24,6 +24,7 @@ struct DashboardView: View {
                     subjectSummarySection
                     practiceHistorySection
                     chapterHeatmapSection
+                    focusReviewSection
                 }
             }
             .padding(.bottom, 24)
@@ -38,10 +39,10 @@ struct DashboardView: View {
         HStack(spacing: 0) {
             StatCell(value: "\(allItems.count)", label: "題庫總題", color: .blue)
             Divider().frame(height: 50)
-            let totalAttempts = allItems.flatMap { $0.attempts }.count
+            let totalAttempts = allItems.flatMap { $0.attempts ?? [] }.count
             StatCell(value: "\(totalAttempts)", label: "總練習次", color: .purple)
             Divider().frame(height: 50)
-            let correct = allItems.flatMap { $0.attempts }.filter { $0.isCorrect }.count
+            let correct = allItems.flatMap { $0.attempts ?? [] }.filter { $0.isCorrect }.count
             let rate = totalAttempts > 0 ? Double(correct) / Double(totalAttempts) : 0
             StatCell(value: String(format: "%.0f%%", rate * 100), label: "整體正確率",
                      color: rate >= 0.8 ? .green : rate >= 0.6 ? .orange : .red)
@@ -81,7 +82,26 @@ struct DashboardView: View {
             .frame(height: CGFloat(subjectData.count) * 40 + 20)
             .padding(.horizontal)
 
-            // 圖例
+            // 各科詳細數字
+            VStack(spacing: 6) {
+                ForEach(subjectData, id: \.subject) { stat in
+                    HStack {
+                        SubjectBadge(subject: stat.subject, style: .compact)
+                        Text(stat.subject)
+                            .font(.caption)
+                        Spacer()
+                        Text("\(stat.correct)/\(stat.total) 題")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(String(format: "%.0f%%", stat.rate * 100))
+                            .font(.caption.bold())
+                            .foregroundStyle(barColor(rate: stat.rate))
+                            .frame(width: 36, alignment: .trailing)
+                    }
+                }
+            }
+            .padding(.horizontal)
+
             HStack(spacing: 16) {
                 LegendItem(color: .green, label: "精熟 ≥80%")
                 LegendItem(color: .orange, label: "待加強 60-79%")
@@ -143,7 +163,6 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "章節掌握熱圖", icon: "map.fill")
 
-            // 科目選擇
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(subjects, id: \.self) { subject in
@@ -167,6 +186,19 @@ struct DashboardView: View {
             if let subject = displaySubject {
                 chapterGrid(subject: subject)
             }
+
+            // 圖例
+            HStack(spacing: 16) {
+                LegendItem(color: .green, label: "精熟 ≥80%")
+                LegendItem(color: .orange, label: "待加強 60-79%")
+                LegendItem(color: .red, label: "需複習 <60%")
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 3).fill(Color(.systemFill)).frame(width: 8, height: 8)
+                    Text("未測")
+                }
+            }
+            .font(.caption)
+            .padding(.horizontal)
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -176,26 +208,83 @@ struct DashboardView: View {
     private func chapterGrid(subject: String) -> some View {
         let chapters = CurriculumData.allChapters(for: subject)
         let itemsForSubject = allItems.filter { $0.subject == subject }
+        let orderedVolumes = ["七上", "七下", "八上", "八下", "九上", "九下"]
+        let byVolume = Dictionary(grouping: chapters, by: { $0.volume })
 
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 8) {
-            ForEach(chapters, id: \.chapter.chapterNum) { entry in
-                let questions = itemsForSubject.filter {
-                    $0.volume == entry.volume && $0.chapterNum == entry.chapter.chapterNum
+        return VStack(alignment: .leading, spacing: 12) {
+            ForEach(orderedVolumes.filter { byVolume[$0] != nil }, id: \.self) { volume in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(volume)
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal)
+
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 8) {
+                        ForEach(byVolume[volume] ?? [], id: \.chapter.chapterNum) { entry in
+                            let questions = itemsForSubject.filter {
+                                $0.volume == entry.volume && $0.chapterNum == entry.chapter.chapterNum
+                            }
+                            let attempts = questions.flatMap { $0.attempts ?? [] }
+                            let correct = attempts.filter { $0.isCorrect }.count
+                            let rate: Double = attempts.isEmpty ? -1 : Double(correct) / Double(attempts.count)
+                            ChapterCell(
+                                volume: entry.volume,
+                                chapterNum: entry.chapter.chapterNum,
+                                chapterName: entry.chapter.name,
+                                questionCount: questions.count,
+                                rate: rate
+                            )
+                        }
+                    }
+                    .padding(.horizontal)
                 }
-                let attempts = questions.flatMap { $0.attempts }
-                let correct = attempts.filter { $0.isCorrect }.count
-                let rate: Double = attempts.isEmpty ? -1 : Double(correct) / Double(attempts.count)
-
-                ChapterCell(
-                    volume: entry.volume,
-                    chapterNum: entry.chapter.chapterNum,
-                    chapterName: entry.chapter.name,
-                    questionCount: questions.count,
-                    rate: rate
-                )
             }
         }
-        .padding(.horizontal)
+    }
+
+    // MARK: - Focus Review List
+
+    private var focusReviewSection: some View {
+        let weak = weakChapters
+        guard !weak.isEmpty else { return AnyView(EmptyView()) }
+
+        return AnyView(
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "重點複習清單", icon: "exclamationmark.triangle.fill")
+                Text("練習正確率未達 60% 的章節")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+
+                ForEach(weak, id: \.key) { item in
+                    HStack(spacing: 12) {
+                        SubjectBadge(subject: item.subject, style: .compact)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.chapterName)
+                                .font(.subheadline.bold())
+                                .lineLimit(1)
+                            Text("\(item.subject) · \(item.volume)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(String(format: "%.0f%%", item.rate * 100))
+                                .font(.headline.bold())
+                                .foregroundStyle(.red)
+                            Text("\(item.correct)/\(item.total)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding()
+                    .background(Color.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                }
+            }
+            .padding()
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .padding(.horizontal)
+        )
     }
 
     // MARK: - Helpers
@@ -203,12 +292,39 @@ struct DashboardView: View {
     private var subjectStats: [SubjectStat] {
         subjects.compactMap { subject in
             let items = allItems.filter { $0.subject == subject }
-            let attempts = items.flatMap { $0.attempts }
+            let attempts = items.flatMap { $0.attempts ?? [] }
             guard !attempts.isEmpty else { return nil }
             let correct = attempts.filter { $0.isCorrect }.count
             let rate = Double(correct) / Double(attempts.count)
-            return SubjectStat(subject: subject, rate: rate)
+            return SubjectStat(subject: subject, rate: rate, correct: correct, total: attempts.count)
         }
+    }
+
+    private var weakChapters: [WeakChapterData] {
+        var result: [WeakChapterData] = []
+        for subject in subjects {
+            let items = allItems.filter { $0.subject == subject }
+            for entry in CurriculumData.allChapters(for: subject) {
+                let questions = items.filter {
+                    $0.volume == entry.volume && $0.chapterNum == entry.chapter.chapterNum
+                }
+                let attempts = questions.flatMap { $0.attempts ?? [] }
+                guard !attempts.isEmpty else { continue }
+                let correct = attempts.filter { $0.isCorrect }.count
+                let rate = Double(correct) / Double(attempts.count)
+                guard rate < 0.6 else { continue }
+                result.append(WeakChapterData(
+                    key: "\(subject)-\(entry.volume)-\(entry.chapter.chapterNum)",
+                    subject: subject,
+                    volume: entry.volume,
+                    chapterName: "第\(entry.chapter.chapterNum)章 \(entry.chapter.name)",
+                    rate: rate,
+                    correct: correct,
+                    total: attempts.count
+                ))
+            }
+        }
+        return result.sorted { $0.rate < $1.rate }
     }
 
     private func barColor(rate: Double) -> Color {
@@ -221,9 +337,21 @@ struct DashboardView: View {
 private struct SubjectStat {
     let subject: String
     let rate: Double
+    let correct: Int
+    let total: Int
     var shortName: String {
         subject.replacingOccurrences(of: "社會-", with: "").replacingOccurrences(of: "自然-", with: "")
     }
+}
+
+private struct WeakChapterData {
+    let key: String
+    let subject: String
+    let volume: String
+    let chapterName: String
+    let rate: Double
+    let correct: Int
+    let total: Int
 }
 
 private struct ChapterCell: View {

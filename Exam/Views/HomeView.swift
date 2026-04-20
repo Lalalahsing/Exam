@@ -8,13 +8,13 @@ struct HomeView: View {
     @AppStorage("anthropicAPIKey") private var apiKey = ""
     @Query(sort: \Exam.createdAt, order: .reverse) private var exams: [Exam]
 
-    @State private var selectedPhotoItem: PhotosPickerItem?
-    @State private var selectedImage: UIImage?
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var isAnalyzing = false
     @State private var analysisError: String?
     @State private var showImagePicker = false
     @State private var showCamera = false
     @State private var showUploadSheet = false
+    @State private var showAPIKeyPrompt = false
     @State private var navigateToResult: Exam?
 
     var body: some View {
@@ -74,13 +74,21 @@ struct HomeView: View {
         .sheet(isPresented: $showUploadSheet) {
             uploadOptionsSheet
         }
-        .onChange(of: selectedPhotoItem) { _, newItem in
+        .sheet(isPresented: $showAPIKeyPrompt) {
+            APIKeyPromptSheet(isPresented: $showAPIKeyPrompt)
+        }
+        .onChange(of: selectedPhotoItems) { _, newItems in
+            guard !newItems.isEmpty else { return }
             Task {
-                if let data = try? await newItem?.loadTransferable(type: Data.self),
-                   let image = UIImage(data: data) {
-                    selectedImage = image
-                    await analyzeImage(image)
+                var images: [UIImage] = []
+                for item in newItems {
+                    if let data = try? await item.loadTransferable(type: Data.self),
+                       let image = UIImage(data: data) {
+                        images.append(image)
+                    }
                 }
+                selectedPhotoItems = []
+                if !images.isEmpty { await analyzeImages(images) }
             }
         }
     }
@@ -89,7 +97,11 @@ struct HomeView: View {
 
     private var uploadCard: some View {
         Button {
-            showUploadSheet = true
+            if apiKey.isEmpty {
+                showAPIKeyPrompt = true
+            } else {
+                showUploadSheet = true
+            }
         } label: {
             HStack {
                 Image(systemName: "plus.circle.fill")
@@ -125,11 +137,12 @@ struct HomeView: View {
                             showCamera = true
                         }
 
-                    // 相簿選擇
-                    PhotosPicker(selection: $selectedPhotoItem,
+                    // 相簿選擇（可多選）
+                    PhotosPicker(selection: $selectedPhotoItems,
+                                 maxSelectionCount: 10,
                                  matching: .images,
                                  photoLibrary: .shared()) {
-                        Label("從相簿選擇", systemImage: "photo.on.rectangle.angled")
+                        Label("從相簿選擇（可多張）", systemImage: "photo.on.rectangle.angled")
                     }
                     .simultaneousGesture(TapGesture().onEnded { showUploadSheet = false })
                 }
@@ -148,19 +161,18 @@ struct HomeView: View {
     // MARK: - Analysis
 
     @MainActor
-    private func analyzeImage(_ image: UIImage) async {
+    private func analyzeImages(_ images: [UIImage]) async {
         isAnalyzing = true
         analysisError = nil
         do {
-            // UIImage 操作在 @MainActor 完成，只傳 Data 給 service（Swift 6 安全）
-            let resized = image.resizedForUpload()
-            guard let imageData = resized.jpegData(compressionQuality: 0.85) else {
+            let imageDatas: [Data] = images.compactMap { $0.resizedForUpload().jpegData(compressionQuality: 0.85) }
+            guard !imageDatas.isEmpty else {
                 analysisError = "圖片編碼失敗"
                 isAnalyzing = false
                 return
             }
-            let result = try await AnthropicService.shared.analyzeExam(imageData: imageData, apiKey: apiKey)
-            let imageName = saveImage(image)
+            let result = try await AnthropicService.shared.analyzeExam(imageDatas: imageDatas, apiKey: apiKey)
+            let imageName = saveImage(images[0])
             let exam = Exam(
                 subject: result.subject,
                 imageName: imageName,
@@ -189,7 +201,7 @@ struct HomeView: View {
                     confidence: q.confidence
                 )
                 eq.exam = exam
-                exam.questions.append(eq)
+                exam.questions?.append(eq)
 
                 // 同步存入題庫
                 let bankItem = QuestionBankItem(
@@ -255,7 +267,7 @@ struct ExamRowView: View {
                 Text(exam.subject)
                     .font(.subheadline.bold())
                 HStack(spacing: 8) {
-                    Text("\(exam.questions.count) 題")
+                    Text("\((exam.questions ?? []).count) 題")
                     if exam.totalAnswered > 0 {
                         Text("答對 \(exam.correctCount)/\(exam.totalAnswered)")
                             .foregroundStyle(exam.accuracyRate >= 0.8 ? .green : exam.accuracyRate >= 0.6 ? .orange : .red)
@@ -273,6 +285,67 @@ struct ExamRowView: View {
     }
 }
 
+
+// MARK: - API Key 提示 Sheet
+
+struct APIKeyPromptSheet: View {
+    @Binding var isPresented: Bool
+    @AppStorage("anthropicAPIKey") private var apiKey = ""
+    @State private var inputKey = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                VStack(spacing: 8) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.blue)
+                    Text("需要 API Key")
+                        .font(.title2.bold())
+                    Text("AI 辨識功能需要 Anthropic API Key。\n請前往 console.anthropic.com 取得。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, 8)
+
+                SecureField("sk-ant-...", text: $inputKey)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(.horizontal)
+
+                Button {
+                    let trimmed = inputKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    apiKey = trimmed
+                    isPresented = false
+                } label: {
+                    Text("儲存並繼續")
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(inputKey.hasPrefix("sk-ant") ? Color.blue : Color.gray)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .disabled(inputKey.count < 10)
+                .padding(.horizontal)
+
+                Spacer()
+            }
+            .padding(.top, 24)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { isPresented = false }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+}
 
 // MARK: - UIImage 縮圖（@MainActor 安全，在此呼叫端處理 UIKit）
 extension UIImage {
