@@ -235,12 +235,54 @@ SUBJECT_COL_ALT = {"英語": 3}  # 閱讀
 def parse_answer_key(pdf_bytes: bytes) -> dict[str, dict[int, str]]:
     """解析官方選擇題答案 PDF，回傳 {subject: {q_num: answer}}
 
-    使用 pdfplumber 表格解析，欄位固定：
-    [題號, -, 國文, 英語(閱讀), 英語(聽力), 數學, 社會, 自然]
-    索引:  0  1    2     3          4         5    6    7
+    動態從標頭列偵測欄位位置，相容各年欄位偏移差異。
+    標頭關鍵字 → 科目：
+      '國文' → 國文
+      '英語'（優先取「閱讀」欄，若無則取首個英語欄）
+      '數學' → 數學
+      '社會' → 社會
+      '自然' → 自然
     """
-    COL_MAP = {2: "國文", 3: "英語", 5: "數學", 6: "社會", 7: "自然"}
+    SUBJ_KEYWORDS = {
+        "國文": ["國文"],
+        "英語": ["英語", "閱讀"],   # 取閱讀欄（若分開）或英語欄
+        "數學": ["數學"],
+        "社會": ["社會"],
+        "自然": ["自然"],
+    }
     result: dict[str, dict[int, str]] = {}
+
+    def _detect_col_map(header_rows: list[list]) -> dict[str, int]:
+        """從最多兩列標頭（跨列合併）推算各科欄位索引。"""
+        # 合並兩列標頭文字（None 替換為空字串）
+        merged: list[str] = []
+        for ci in range(max(len(r) for r in header_rows)):
+            cell = ""
+            for hr in header_rows:
+                if ci < len(hr) and hr[ci]:
+                    cell += str(hr[ci]).replace("\n", "")
+            merged.append(cell.strip())
+
+        col_map: dict[str, int] = {}
+        # 英語：先找「閱讀」，再找「英語」
+        for ci, text in enumerate(merged):
+            if "國文" in text and "國文" not in col_map:
+                col_map["國文"] = ci
+            if "數學" in text and "數學" not in col_map:
+                col_map["數學"] = ci
+            if "社會" in text and "社會" not in col_map:
+                col_map["社會"] = ci
+            if "自然" in text and "自然" not in col_map:
+                col_map["自然"] = ci
+            if "閱讀" in text and "英語" not in col_map:
+                col_map["英語"] = ci
+        # 若無「閱讀」，退而求其次取「英語」欄
+        if "英語" not in col_map:
+            for ci, text in enumerate(merged):
+                if "英語" in text:
+                    col_map["英語"] = ci
+                    break
+        return col_map
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
@@ -248,7 +290,33 @@ def parse_answer_key(pdf_bytes: bytes) -> dict[str, dict[int, str]]:
             if not tables:
                 continue
             for table in tables:
-                for row in table:
+                if not table:
+                    continue
+
+                # 找標頭列（含科目名稱的行，通常是前 1-2 行）
+                header_rows = []
+                data_start = 0
+                for ri, row in enumerate(table[:4]):
+                    cleaned = [str(c).strip() if c else "" for c in row]
+                    if any(k in " ".join(cleaned) for k in ["國文", "數學", "社會", "自然"]):
+                        header_rows.append(row)
+                        data_start = ri + 1
+                    elif header_rows:
+                        # 若上一行是標頭且這行含「閱讀」「聽力」等子標頭，也納入
+                        if any(k in " ".join(cleaned) for k in ["閱讀", "聽力"]):
+                            header_rows.append(row)
+                            data_start = ri + 1
+                        else:
+                            break
+
+                if not header_rows:
+                    continue
+
+                col_map = _detect_col_map(header_rows)
+                if not col_map:
+                    continue
+
+                for row in table[data_start:]:
                     if not row or not row[0]:
                         continue
                     try:
@@ -257,9 +325,9 @@ def parse_answer_key(pdf_bytes: bytes) -> dict[str, dict[int, str]]:
                         continue
                     if q_num < 1 or q_num > 60:
                         continue
-                    for col_idx, subj in COL_MAP.items():
-                        if col_idx < len(row):
-                            val = str(row[col_idx]).strip() if row[col_idx] else ""
+                    for subj, ci in col_map.items():
+                        if ci < len(row):
+                            val = str(row[ci]).strip() if row[ci] else ""
                             if val in {'A', 'B', 'C', 'D'}:
                                 result.setdefault(subj, {})[q_num] = val
 
