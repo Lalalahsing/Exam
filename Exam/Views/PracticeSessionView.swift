@@ -232,9 +232,13 @@ struct PracticeSessionView: View {
         showAnswer: Bool
     ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            // 圖表（若有）
+            // 圖形（若有）
             if let figName = question.figureImageName {
                 FigureImageView(imageName: figName)
+            }
+            // 表格（若有）
+            if let table = question.decodedTable {
+                QuestionTableView(table: table)
             }
             Text(question.questionText)
                 .font(.body)

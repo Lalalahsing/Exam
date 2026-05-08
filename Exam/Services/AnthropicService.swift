@@ -10,6 +10,11 @@ struct FigureRegion: Codable, Sendable {
     let height: Double // 高度（0~1）
 }
 
+struct TableData: Codable, Sendable {
+    let headers: [String]   // 標題列（可為空陣列）
+    let rows: [[String]]    // 資料列
+}
+
 struct ExamAnalysisResponse: Codable, Sendable {
     let subject: String
     let questions: [QuestionData]
@@ -31,6 +36,7 @@ struct QuestionData: Codable, Sendable {
     let difficulty: String
     let confidence: String
     let figureRegion: FigureRegion?
+    let tableData: TableData?
     let groupId: String?
     let groupPremise: String?
     let groupOrder: Int
@@ -51,6 +57,7 @@ struct QuestionData: Codable, Sendable {
         difficulty = try c.decode(String.self, forKey: .difficulty)
         confidence = try c.decode(String.self, forKey: .confidence)
         figureRegion = try c.decodeIfPresent(FigureRegion.self, forKey: .figureRegion)
+        tableData = try c.decodeIfPresent(TableData.self, forKey: .tableData)
         groupId = try c.decodeIfPresent(String.self, forKey: .groupId)
         groupPremise = try c.decodeIfPresent(String.self, forKey: .groupPremise)
         groupOrder = try c.decodeIfPresent(Int.self, forKey: .groupOrder) ?? 0
@@ -71,6 +78,7 @@ struct QuestionData: Codable, Sendable {
         case difficulty
         case confidence
         case figureRegion = "figure_region"
+        case tableData = "table_data"
         case groupId = "group_id"
         case groupPremise = "group_premise"
         case groupOrder = "group_order"
@@ -214,6 +222,7 @@ struct AnthropicService: Sendable {
               "difficulty": "medium",
               "confidence": "high",
               "figure_region": null,
+              "table_data": null,
               "group_id": null,
               "group_premise": null,
               "group_order": 0
@@ -226,20 +235,25 @@ struct AnthropicService: Sendable {
         1. 每道題目的 question_text 必須完整，不可截斷
         2. 非選擇題的 options 填 null
         3. 無法判斷的欄位填 null，不要猜測
-        4. 如題目包含圖表/圖形，在 question_text 中加上 "[含圖表]" 標記
+        4. 如題目包含圖表/圖形，在 question_text 中加上 "[含圖表]" 標記；如含表格，加上 "[含表格]" 標記
         5. 只輸出JSON，絕對不要有其他文字
         6. 【題組識別】若多道題目共享同一段閱讀文章、圖表、情境描述（即「題組」），必須：
            - 將共享的前提文字填入每道題的 group_premise（完整文字，不可省略）
            - 為同一題組的所有題目指定相同的 group_id（用簡短字串，如 "G1"、"G2"）
            - group_order 從 1 開始遞增（1, 2, 3...）
            - 獨立題目的 group_id、group_premise 填 null，group_order 填 0
-        7. 【圖表位置】若題目含有圖表/圖片/地圖/表格等視覺元素，除在 question_text 加 "[含圖表]" 外，還須：
-           - 在 figure_region 填入該圖表在對應圖片中的大概範圍（0.0~1.0 比例坐標）
+        7. 【圖形位置】若題目含有圖形/圖片/地圖等純視覺元素（非文字表格），除在 question_text 加 "[含圖表]" 外，還須：
+           - 在 figure_region 填入該圖形在對應圖片中的大概範圍（0.0~1.0 比例坐標）
            - page：第幾張傳入的圖片（從 0 開始）
-           - x/y：圖表左上角佔圖片寬/高的比例
-           - width/height：圖表佔圖片寬/高的比例
+           - x/y：圖形左上角佔圖片寬/高的比例；width/height：圖形佔圖片寬/高的比例
            - 例：{"page": 0, "x": 0.05, "y": 0.25, "width": 0.9, "height": 0.35}
-           - 若無圖表則 figure_region 填 null
+           - 若無純視覺圖形則 figure_region 填 null
+        8. 【表格提取】若題目含有文字表格（資料表、比較表、統計表等），必須將表格完整提取為結構化資料：
+           - headers：標題列的所有欄位名稱（若無明確標題則填空陣列 []）
+           - rows：每一資料列，每列為一個字串陣列
+           - 例：{"headers": ["物質", "熔點(°C)", "沸點(°C)"], "rows": [["水", "0", "100"], ["酒精", "-114", "78"]]}
+           - 表格內容必須完整，不可省略任何列或欄
+           - 若無表格則 table_data 填 null
         """
     }
 

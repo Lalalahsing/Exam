@@ -58,6 +58,7 @@ final class ExamQuestion {
     var groupPremise: String?
     var groupOrder: Int
     var figureImageName: String?
+    var tableJson: String?
 
     init(number: Int, questionText: String, questionType: String,
          optionA: String? = nil, optionB: String? = nil,
@@ -66,7 +67,7 @@ final class ExamQuestion {
          isCorrect: Bool? = nil, volume: String, chapterNum: Int,
          chapterName: String, topic: String, difficulty: String, confidence: String,
          groupId: String? = nil, groupPremise: String? = nil, groupOrder: Int = 0,
-         figureImageName: String? = nil) {
+         figureImageName: String? = nil, tableJson: String? = nil) {
         self.id = UUID()
         self.number = number
         self.questionText = questionText
@@ -88,5 +89,6 @@ final class ExamQuestion {
         self.groupPremise = groupPremise
         self.groupOrder = groupOrder
         self.figureImageName = figureImageName
+        self.tableJson = tableJson
     }
 }

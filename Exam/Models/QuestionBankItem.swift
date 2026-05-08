@@ -29,6 +29,7 @@ final class QuestionBankItem {
     /// 練習累計答對次數
     var correctAttemptCount: Int = 0
     var figureImageName: String?
+    var tableJson: String?          // 編碼為 JSON 字串的 TableData
     // 題組欄位（nil 表示獨立題目）
     var groupId: String?
     var groupPremise: String?
@@ -45,7 +46,8 @@ final class QuestionBankItem {
          explanation: String = "",
          firstAttemptCorrect: Bool? = nil,
          groupId: String? = nil, groupPremise: String? = nil, groupOrder: Int = 0,
-         figureImageName: String? = nil) {
+         figureImageName: String? = nil,
+         tableJson: String? = nil) {
         self.id = UUID()
         self.sourceExamId = sourceExamId
         self.year = year
@@ -73,6 +75,7 @@ final class QuestionBankItem {
         self.groupPremise = groupPremise
         self.groupOrder = groupOrder
         self.figureImageName = figureImageName
+        self.tableJson = tableJson
     }
 
     var errorRate: Double {

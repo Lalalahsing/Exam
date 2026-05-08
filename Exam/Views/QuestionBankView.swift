@@ -187,9 +187,14 @@ struct QuestionDetailSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // 圖表（若有）
+                    // 圖形（若有）
                     if let figName = item.figureImageName {
                         FigureImageView(imageName: figName)
+                    }
+                    // 表格（若有）
+                    if let table = item.decodedTable {
+                        QuestionTableView(table: table)
+                            .padding(.horizontal)
                     }
 
                     // 題目

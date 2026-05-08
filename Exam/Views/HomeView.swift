@@ -189,12 +189,18 @@ struct HomeView: View {
             modelContext.insert(exam)
 
             for q in result.questions {
-                // 裁切圖表（若有）
+                // 裁切圖形（若有）
                 let figName: String? = {
                     guard let region = q.figureRegion,
                           region.page < images.count,
                           region.width > 0.01, region.height > 0.01 else { return nil }
                     return saveCroppedFigure(from: images[region.page], region: region)
+                }()
+
+                // 編碼表格（若有）
+                let tableJsonStr: String? = {
+                    guard let td = q.tableData else { return nil }
+                    return (try? String(data: JSONEncoder().encode(td), encoding: .utf8)) ?? nil
                 }()
 
                 let eq = ExamQuestion(
@@ -217,7 +223,8 @@ struct HomeView: View {
                     groupId: q.groupId,
                     groupPremise: q.groupPremise,
                     groupOrder: q.groupOrder,
-                    figureImageName: figName
+                    figureImageName: figName,
+                    tableJson: tableJsonStr
                 )
                 eq.exam = exam
                 exam.questions?.append(eq)
@@ -243,7 +250,8 @@ struct HomeView: View {
                     groupId: q.groupId,
                     groupPremise: q.groupPremise,
                     groupOrder: q.groupOrder,
-                    figureImageName: figName
+                    figureImageName: figName,
+                    tableJson: tableJsonStr
                 )
                 modelContext.insert(bankItem)
             }
