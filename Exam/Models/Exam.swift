@@ -9,15 +9,18 @@ final class Exam {
     var createdAt: Date
     var rawJson: String
     var notes: String
+    var pageImageNames: [String]   // 所有頁面圖片檔名（第0頁即 imageName）
     @Relationship(deleteRule: .cascade) var questions: [ExamQuestion]?
 
-    init(subject: String, imageName: String, rawJson: String, notes: String = "") {
+    init(subject: String, imageName: String, rawJson: String, notes: String = "",
+         pageImageNames: [String] = []) {
         self.id = UUID()
         self.subject = subject
         self.imageName = imageName
         self.createdAt = Date()
         self.rawJson = rawJson
         self.notes = notes
+        self.pageImageNames = pageImageNames
         self.questions = []
     }
 
@@ -54,6 +57,7 @@ final class ExamQuestion {
     var groupId: String?
     var groupPremise: String?
     var groupOrder: Int
+    var figureImageName: String?
 
     init(number: Int, questionText: String, questionType: String,
          optionA: String? = nil, optionB: String? = nil,
@@ -61,7 +65,8 @@ final class ExamQuestion {
          correctAnswer: String? = nil, studentAnswer: String? = nil,
          isCorrect: Bool? = nil, volume: String, chapterNum: Int,
          chapterName: String, topic: String, difficulty: String, confidence: String,
-         groupId: String? = nil, groupPremise: String? = nil, groupOrder: Int = 0) {
+         groupId: String? = nil, groupPremise: String? = nil, groupOrder: Int = 0,
+         figureImageName: String? = nil) {
         self.id = UUID()
         self.number = number
         self.questionText = questionText
@@ -82,5 +87,6 @@ final class ExamQuestion {
         self.groupId = groupId
         self.groupPremise = groupPremise
         self.groupOrder = groupOrder
+        self.figureImageName = figureImageName
     }
 }

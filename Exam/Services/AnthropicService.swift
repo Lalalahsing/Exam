@@ -2,6 +2,14 @@ import Foundation
 
 // MARK: - API Response Models（全部標記 Sendable 以符合 Swift 6 並發規則）
 
+struct FigureRegion: Codable, Sendable {
+    let page: Int      // 0-based，對應第幾張傳入的圖片
+    let x: Double      // 左邊界（0~1）
+    let y: Double      // 上邊界（0~1）
+    let width: Double  // 寬度（0~1）
+    let height: Double // 高度（0~1）
+}
+
 struct ExamAnalysisResponse: Codable, Sendable {
     let subject: String
     let questions: [QuestionData]
@@ -22,6 +30,7 @@ struct QuestionData: Codable, Sendable {
     let topic: String
     let difficulty: String
     let confidence: String
+    let figureRegion: FigureRegion?
     let groupId: String?
     let groupPremise: String?
     let groupOrder: Int
@@ -41,6 +50,7 @@ struct QuestionData: Codable, Sendable {
         topic = try c.decode(String.self, forKey: .topic)
         difficulty = try c.decode(String.self, forKey: .difficulty)
         confidence = try c.decode(String.self, forKey: .confidence)
+        figureRegion = try c.decodeIfPresent(FigureRegion.self, forKey: .figureRegion)
         groupId = try c.decodeIfPresent(String.self, forKey: .groupId)
         groupPremise = try c.decodeIfPresent(String.self, forKey: .groupPremise)
         groupOrder = try c.decodeIfPresent(Int.self, forKey: .groupOrder) ?? 0
@@ -60,6 +70,7 @@ struct QuestionData: Codable, Sendable {
         case topic
         case difficulty
         case confidence
+        case figureRegion = "figure_region"
         case groupId = "group_id"
         case groupPremise = "group_premise"
         case groupOrder = "group_order"
@@ -202,6 +213,7 @@ struct AnthropicService: Sendable {
               "topic": "化學反應式的平衡",
               "difficulty": "medium",
               "confidence": "high",
+              "figure_region": null,
               "group_id": null,
               "group_premise": null,
               "group_order": 0
@@ -221,6 +233,13 @@ struct AnthropicService: Sendable {
            - 為同一題組的所有題目指定相同的 group_id（用簡短字串，如 "G1"、"G2"）
            - group_order 從 1 開始遞增（1, 2, 3...）
            - 獨立題目的 group_id、group_premise 填 null，group_order 填 0
+        7. 【圖表位置】若題目含有圖表/圖片/地圖/表格等視覺元素，除在 question_text 加 "[含圖表]" 外，還須：
+           - 在 figure_region 填入該圖表在對應圖片中的大概範圍（0.0~1.0 比例坐標）
+           - page：第幾張傳入的圖片（從 0 開始）
+           - x/y：圖表左上角佔圖片寬/高的比例
+           - width/height：圖表佔圖片寬/高的比例
+           - 例：{"page": 0, "x": 0.05, "y": 0.25, "width": 0.9, "height": 0.35}
+           - 若無圖表則 figure_region 填 null
         """
     }
 

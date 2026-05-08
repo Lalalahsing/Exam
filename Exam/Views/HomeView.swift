@@ -172,16 +172,31 @@ struct HomeView: View {
                 return
             }
             let result = try await AnthropicService.shared.analyzeExam(imageDatas: imageDatas, apiKey: apiKey)
-            let imageName = saveImage(images[0])
+            // 儲存所有頁面圖片
+            let pageNames: [String] = images.enumerated().map { i, img in
+                let name = UUID().uuidString + "_p\(i).jpg"
+                saveImageWithName(img, name: name)
+                return name
+            }
+            let imageName = pageNames.first ?? saveImage(images[0])
             let exam = Exam(
                 subject: result.subject,
                 imageName: imageName,
                 rawJson: (try? String(data: JSONEncoder().encode(result), encoding: .utf8)) ?? "",
-                notes: result.notes ?? ""
+                notes: result.notes ?? "",
+                pageImageNames: pageNames
             )
             modelContext.insert(exam)
 
             for q in result.questions {
+                // 裁切圖表（若有）
+                let figName: String? = {
+                    guard let region = q.figureRegion,
+                          region.page < images.count,
+                          region.width > 0.01, region.height > 0.01 else { return nil }
+                    return saveCroppedFigure(from: images[region.page], region: region)
+                }()
+
                 let eq = ExamQuestion(
                     number: q.number,
                     questionText: q.questionText,
@@ -201,7 +216,8 @@ struct HomeView: View {
                     confidence: q.confidence,
                     groupId: q.groupId,
                     groupPremise: q.groupPremise,
-                    groupOrder: q.groupOrder
+                    groupOrder: q.groupOrder,
+                    figureImageName: figName
                 )
                 eq.exam = exam
                 exam.questions?.append(eq)
@@ -226,7 +242,8 @@ struct HomeView: View {
                     firstAttemptCorrect: q.isCorrect,
                     groupId: q.groupId,
                     groupPremise: q.groupPremise,
-                    groupOrder: q.groupOrder
+                    groupOrder: q.groupOrder,
+                    figureImageName: figName
                 )
                 modelContext.insert(bankItem)
             }
@@ -246,6 +263,44 @@ struct HomeView: View {
             try? data.write(to: url)
         }
         return name
+    }
+
+    /// 儲存圖片並指定檔名
+    @discardableResult
+    private func saveImageWithName(_ image: UIImage, name: String) -> String {
+        if let data = image.jpegData(compressionQuality: 0.88) {
+            let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent(name)
+            try? data.write(to: url)
+        }
+        return name
+    }
+
+    /// 依 FigureRegion 裁切圖片，儲存並回傳檔名；失敗回傳 nil
+    private func saveCroppedFigure(from image: UIImage, region: FigureRegion) -> String? {
+        // 先 normalize 方向
+        let renderer = UIGraphicsImageRenderer(size: image.size)
+        let normalized = renderer.image { _ in image.draw(at: .zero) }
+        let w = normalized.size.width
+        let h = normalized.size.height
+        // 加 5% padding，避免裁太緊
+        let pad = 0.05
+        let rx = max(0, region.x - pad) * w
+        let ry = max(0, region.y - pad) * h
+        let rw = min(1, region.x + region.width  + pad) * w - rx
+        let rh = min(1, region.y + region.height + pad) * h - ry
+        guard rw > 10, rh > 10 else { return nil }
+        let rect = CGRect(x: rx, y: ry, width: rw, height: rh)
+        guard let cgCropped = normalized.cgImage?.cropping(to: rect) else { return nil }
+        let cropped = UIImage(cgImage: cgCropped)
+        let name = UUID().uuidString + "_fig.jpg"
+        if let data = cropped.jpegData(compressionQuality: 0.9) {
+            let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent(name)
+            try? data.write(to: url)
+            return name
+        }
+        return nil
     }
 
     private func deleteExams(at offsets: IndexSet) {

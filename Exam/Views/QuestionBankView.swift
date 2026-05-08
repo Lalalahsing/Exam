@@ -187,6 +187,12 @@ struct QuestionDetailSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    // 圖表（若有）
+                    if let figName = item.figureImageName {
+                        FigureImageView(imageName: figName)
+                    }
+
+                    // 題目
                     VStack(alignment: .leading, spacing: 8) {
                         Text("題目").font(.caption.bold()).foregroundStyle(.secondary)
                         Text(item.questionText).font(.body)

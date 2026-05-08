@@ -28,6 +28,7 @@ final class QuestionBankItem {
     var attemptCount: Int = 0
     /// 練習累計答對次數
     var correctAttemptCount: Int = 0
+    var figureImageName: String?
     // 題組欄位（nil 表示獨立題目）
     var groupId: String?
     var groupPremise: String?
@@ -43,7 +44,8 @@ final class QuestionBankItem {
          difficulty: String,
          explanation: String = "",
          firstAttemptCorrect: Bool? = nil,
-         groupId: String? = nil, groupPremise: String? = nil, groupOrder: Int = 0) {
+         groupId: String? = nil, groupPremise: String? = nil, groupOrder: Int = 0,
+         figureImageName: String? = nil) {
         self.id = UUID()
         self.sourceExamId = sourceExamId
         self.year = year
@@ -70,6 +72,7 @@ final class QuestionBankItem {
         self.groupId = groupId
         self.groupPremise = groupPremise
         self.groupOrder = groupOrder
+        self.figureImageName = figureImageName
     }
 
     var errorRate: Double {

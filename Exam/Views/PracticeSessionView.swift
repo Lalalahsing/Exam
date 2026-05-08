@@ -232,6 +232,10 @@ struct PracticeSessionView: View {
         showAnswer: Bool
     ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
+            // 圖表（若有）
+            if let figName = question.figureImageName {
+                FigureImageView(imageName: figName)
+            }
             Text(question.questionText)
                 .font(.body)
 
@@ -442,6 +446,7 @@ struct PracticeSessionView: View {
 
     // MARK: - Logic
 
+
     private func setupSession() {
         let pool = allItems.filter { item in
             let matchSub  = config.subject == "全部" || item.subject == config.subject
@@ -490,6 +495,69 @@ struct PracticeSessionView: View {
                 session.finishedAt = Date()
                 try? modelContext.save()
                 isFinished = true
+            }
+        }
+    }
+}
+
+// MARK: - Figure Image View
+
+struct FigureImageView: View {
+    let imageName: String
+    @State private var showFullscreen = false
+
+    private var imageURL: URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(imageName)
+    }
+
+    var body: some View {
+        if let url = imageURL,
+           let uiImage = UIImage(contentsOfFile: url.path) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFit()
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                )
+                .onTapGesture { showFullscreen = true }
+                .fullScreenCover(isPresented: $showFullscreen) {
+                    FullscreenImageView(uiImage: uiImage, onDismiss: { showFullscreen = false })
+                }
+        }
+    }
+}
+
+struct FullscreenImageView: View {
+    let uiImage: UIImage
+    let onDismiss: () -> Void
+    @State private var scale: CGFloat = 1.0
+
+    var body: some View {
+        NavigationStack {
+            GeometryReader { geo in
+                ScrollView([.horizontal, .vertical]) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(
+                            width: geo.size.width * max(scale, 1),
+                            height: geo.size.height * max(scale, 1)
+                        )
+                }
+            }
+            .background(Color.black)
+            .gesture(MagnificationGesture()
+                .onChanged { v in scale = v }
+                .onEnded { _ in if scale < 1 { withAnimation { scale = 1 } } }
+            )
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { onDismiss() }
+                }
             }
         }
     }
