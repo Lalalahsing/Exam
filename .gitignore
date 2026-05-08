@@ -19,3 +19,8 @@ Pods/
 
 # Build
 build/
+
+# Scripts cache / output
+scripts/cache/
+scripts/output/
+scripts/__pycache__/
