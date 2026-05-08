@@ -28,6 +28,10 @@ final class QuestionBankItem {
     var attemptCount: Int = 0
     /// 練習累計答對次數
     var correctAttemptCount: Int = 0
+    // 題組欄位（nil 表示獨立題目）
+    var groupId: String?
+    var groupPremise: String?
+    var groupOrder: Int
 
     init(sourceExamId: UUID, year: Int = 0, subject: String, volume: String,
          chapterNum: Int, chapterName: String, topic: String,
@@ -38,7 +42,8 @@ final class QuestionBankItem {
          passRate: Double = -1,
          difficulty: String,
          explanation: String = "",
-         firstAttemptCorrect: Bool? = nil) {
+         firstAttemptCorrect: Bool? = nil,
+         groupId: String? = nil, groupPremise: String? = nil, groupOrder: Int = 0) {
         self.id = UUID()
         self.sourceExamId = sourceExamId
         self.year = year
@@ -62,6 +67,9 @@ final class QuestionBankItem {
         self.createdAt = Date()
         self.attemptCount = 0
         self.correctAttemptCount = 0
+        self.groupId = groupId
+        self.groupPremise = groupPremise
+        self.groupOrder = groupOrder
     }
 
     var errorRate: Double {

@@ -16,11 +16,14 @@ struct PracticeSetupView: View {
     }
 
     private var poolCount: Int {
-        allItems.filter { item in
+        let filtered = allItems.filter { item in
             let matchSub = selectedSubject == "全部" || item.subject == selectedSubject
             let matchVol = selectedVolume == "全部" || item.volume == selectedVolume
             return matchSub && matchVol
-        }.count
+        }
+        let groupIds = Set(filtered.compactMap { $0.groupId }.filter { !$0.isEmpty })
+        let standaloneCount = filtered.filter { ($0.groupId ?? "").isEmpty }.count
+        return standaloneCount + groupIds.count
     }
 
     var body: some View {
@@ -45,7 +48,7 @@ struct PracticeSetupView: View {
             } header: {
                 Text("出題數量")
             } footer: {
-                Text("題庫中符合條件的題目共 \(poolCount) 題，依加權演算法抽取（錯誤率高的題目優先出現）")
+                Text("題庫中符合條件的共 \(poolCount) 組/題，依加權演算法抽取（錯誤率高的題目優先出現）")
             }
 
             Section("演算法說明") {

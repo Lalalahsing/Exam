@@ -198,7 +198,10 @@ struct HomeView: View {
                     chapterName: q.chapterName,
                     topic: q.topic,
                     difficulty: q.difficulty,
-                    confidence: q.confidence
+                    confidence: q.confidence,
+                    groupId: q.groupId,
+                    groupPremise: q.groupPremise,
+                    groupOrder: q.groupOrder
                 )
                 eq.exam = exam
                 exam.questions?.append(eq)
@@ -220,7 +223,10 @@ struct HomeView: View {
                     optionD: q.options?["D"],
                     correctAnswer: q.correctAnswer,
                     difficulty: q.difficulty,
-                    firstAttemptCorrect: q.isCorrect
+                    firstAttemptCorrect: q.isCorrect,
+                    groupId: q.groupId,
+                    groupPremise: q.groupPremise,
+                    groupOrder: q.groupOrder
                 )
                 modelContext.insert(bankItem)
             }

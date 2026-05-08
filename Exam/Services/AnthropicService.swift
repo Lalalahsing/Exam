@@ -22,6 +22,29 @@ struct QuestionData: Codable, Sendable {
     let topic: String
     let difficulty: String
     let confidence: String
+    let groupId: String?
+    let groupPremise: String?
+    let groupOrder: Int
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        number = try c.decode(Int.self, forKey: .number)
+        questionText = try c.decode(String.self, forKey: .questionText)
+        questionType = try c.decode(String.self, forKey: .questionType)
+        options = try c.decodeIfPresent([String: String].self, forKey: .options)
+        correctAnswer = try c.decodeIfPresent(String.self, forKey: .correctAnswer)
+        studentAnswer = try c.decodeIfPresent(String.self, forKey: .studentAnswer)
+        isCorrect = try c.decodeIfPresent(Bool.self, forKey: .isCorrect)
+        volume = try c.decode(String.self, forKey: .volume)
+        chapterNum = try c.decode(Int.self, forKey: .chapterNum)
+        chapterName = try c.decode(String.self, forKey: .chapterName)
+        topic = try c.decode(String.self, forKey: .topic)
+        difficulty = try c.decode(String.self, forKey: .difficulty)
+        confidence = try c.decode(String.self, forKey: .confidence)
+        groupId = try c.decodeIfPresent(String.self, forKey: .groupId)
+        groupPremise = try c.decodeIfPresent(String.self, forKey: .groupPremise)
+        groupOrder = try c.decodeIfPresent(Int.self, forKey: .groupOrder) ?? 0
+    }
 
     enum CodingKeys: String, CodingKey {
         case number
@@ -37,6 +60,9 @@ struct QuestionData: Codable, Sendable {
         case topic
         case difficulty
         case confidence
+        case groupId = "group_id"
+        case groupPremise = "group_premise"
+        case groupOrder = "group_order"
     }
 }
 
@@ -175,7 +201,10 @@ struct AnthropicService: Sendable {
               "chapter_name": "化學反應與方程式",
               "topic": "化學反應式的平衡",
               "difficulty": "medium",
-              "confidence": "high"
+              "confidence": "high",
+              "group_id": null,
+              "group_premise": null,
+              "group_order": 0
             }
           ],
           "notes": "整體備註"
@@ -187,6 +216,11 @@ struct AnthropicService: Sendable {
         3. 無法判斷的欄位填 null，不要猜測
         4. 如題目包含圖表/圖形，在 question_text 中加上 "[含圖表]" 標記
         5. 只輸出JSON，絕對不要有其他文字
+        6. 【題組識別】若多道題目共享同一段閱讀文章、圖表、情境描述（即「題組」），必須：
+           - 將共享的前提文字填入每道題的 group_premise（完整文字，不可省略）
+           - 為同一題組的所有題目指定相同的 group_id（用簡短字串，如 "G1"、"G2"）
+           - group_order 從 1 開始遞增（1, 2, 3...）
+           - 獨立題目的 group_id、group_premise 填 null，group_order 填 0
         """
     }
 

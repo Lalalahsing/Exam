@@ -51,13 +51,17 @@ final class ExamQuestion {
     var topic: String
     var difficulty: String
     var confidence: String
+    var groupId: String?
+    var groupPremise: String?
+    var groupOrder: Int
 
     init(number: Int, questionText: String, questionType: String,
          optionA: String? = nil, optionB: String? = nil,
          optionC: String? = nil, optionD: String? = nil,
          correctAnswer: String? = nil, studentAnswer: String? = nil,
          isCorrect: Bool? = nil, volume: String, chapterNum: Int,
-         chapterName: String, topic: String, difficulty: String, confidence: String) {
+         chapterName: String, topic: String, difficulty: String, confidence: String,
+         groupId: String? = nil, groupPremise: String? = nil, groupOrder: Int = 0) {
         self.id = UUID()
         self.number = number
         self.questionText = questionText
@@ -75,5 +79,8 @@ final class ExamQuestion {
         self.topic = topic
         self.difficulty = difficulty
         self.confidence = confidence
+        self.groupId = groupId
+        self.groupPremise = groupPremise
+        self.groupOrder = groupOrder
     }
 }
