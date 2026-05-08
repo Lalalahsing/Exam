@@ -3,6 +3,7 @@
 build_default_db.py
 ===================
 不需 AI API，直接從官方 PDF 解析題文、答案、通過率，
+同時偵測題組（group）、提取表格（table）、標記圖形（figure），
 產生 exam_data.db 作為 iOS app 預設題庫。
 
 用法：
@@ -13,6 +14,7 @@ build_default_db.py
 import io
 import re
 import json
+import uuid
 import sqlite3
 import requests
 import pdfplumber
@@ -304,22 +306,248 @@ def parse_pass_rates(pdf_bytes: bytes) -> dict[str, dict[int, float]]:
     return result
 
 # ─────────────────────────────────────────────
-# 題目解析（pdfplumber 文字抽取）
+# 題組偵測（文字模式比對）
+# ─────────────────────────────────────────────
+
+# 會考題組前綴常見模式，例如：
+#   ◎第46至48題為題組題，請依下文回答第46至48題。
+#   ◎請依下列文章，回答第46～48題。
+#   ◎閱讀下文，回答第46-48題。
+#   ◎以下為某某資料，依此回答第46至48題。
+GROUP_RANGE_RE = re.compile(
+    r'第\s*(\d{1,2})\s*[至到~～\-－–—]\s*(\d{1,2})\s*題'
+)
+
+def detect_groups(lines: list[str]) -> dict[int, dict]:
+    """
+    掃描 lines 中的題組標記，回傳：
+    { q_num: {"group_id": str, "group_premise": str, "group_order": int} }
+    """
+    group_map: dict[int, dict] = {}
+
+    Q_LINE = re.compile(r'^(\d{1,2})[.．]\s*')
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # 尋找題組起始行：包含「第N至N題」或「第N～N題」且通常以「◎」或空白起始
+        m_range = GROUP_RANGE_RE.search(line)
+        if m_range:
+            start_q = int(m_range.group(1))
+            end_q   = int(m_range.group(2))
+
+            # 合理範圍檢查
+            if 1 <= start_q < end_q <= 60 and (end_q - start_q) <= 10:
+                # 收集前提文字：從此行開始，直到遇到第一個題目行
+                premise_lines = [line]
+                j = i + 1
+                while j < len(lines):
+                    candidate = lines[j]
+                    # 如果遇到題目行（N. ...），停止
+                    if Q_LINE.match(candidate):
+                        try:
+                            n = int(Q_LINE.match(candidate).group(1))
+                            if n == start_q:
+                                break
+                        except Exception:
+                            pass
+                    # 如果又遇到另一個題組標記，停止
+                    if GROUP_RANGE_RE.search(candidate) and candidate != line:
+                        break
+                    premise_lines.append(candidate)
+                    j += 1
+
+                premise_text = " ".join(pl.strip() for pl in premise_lines if pl.strip())
+                # 去除開頭的「◎」和末尾的指示語
+                premise_text = re.sub(r'^[◎○●▶►\s]+', '', premise_text)
+                premise_text = re.sub(r'[，,。]*請依.*回答.*題[。,]?\s*$', '', premise_text).strip()
+                premise_text = re.sub(r'[，,。]*依此回答.*題[。,]?\s*$', '', premise_text).strip()
+
+                if len(premise_text) > 5:  # 至少有意義的前提
+                    group_id = str(uuid.uuid4())
+                    for order, q_num in enumerate(range(start_q, end_q + 1)):
+                        group_map[q_num] = {
+                            "group_id":      group_id,
+                            "group_premise": premise_text,
+                            "group_order":   order,
+                        }
+        i += 1
+
+    return group_map
+
+# ─────────────────────────────────────────────
+# 表格提取（pdfplumber）
+# ─────────────────────────────────────────────
+
+def extract_page_tables(pdf_bytes: bytes) -> list[dict]:
+    """
+    提取每頁所有表格，回傳：
+    [ { "page": int, "bbox": (x0,y0,x1,y1), "data": {"headers":[...], "rows":[[...],...]} } ]
+    只保留有實質內容的表格（至少 2 列 × 2 欄）。
+    """
+    results = []
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page_idx, page in enumerate(pdf.pages):
+                try:
+                    found_tables = page.find_tables()
+                except Exception:
+                    found_tables = []
+
+                for tbl in found_tables:
+                    try:
+                        raw = tbl.extract()
+                    except Exception:
+                        continue
+                    if not raw or len(raw) < 2:
+                        continue
+                    # 過濾只有一欄的偽表格
+                    max_cols = max(len(row) for row in raw if row)
+                    if max_cols < 2:
+                        continue
+
+                    # 判斷第一列是否為標題列
+                    first_row = [str(c).strip() if c else "" for c in raw[0]]
+                    rest_rows = raw[1:]
+
+                    # 若第一列全是數字（可能是題號列），當作資料列而非標題
+                    all_digits = all(re.match(r'^\d+$', c) or c == "" for c in first_row)
+                    if all_digits or not any(first_row):
+                        headers = []
+                        data_rows = raw
+                    else:
+                        headers = first_row
+                        data_rows = rest_rows
+
+                    rows = []
+                    for row in data_rows:
+                        cleaned = [str(c).strip() if c else "" for c in row]
+                        # 跳過全空白列
+                        if any(cleaned):
+                            rows.append(cleaned)
+
+                    if not rows:
+                        continue
+
+                    # 標準化列寬：所有列補齊到最大欄數
+                    max_c = max(len(r) for r in rows)
+                    if headers:
+                        while len(headers) < max_c:
+                            headers.append("")
+                    rows = [r + [""] * (max_c - len(r)) for r in rows]
+
+                    results.append({
+                        "page": page_idx,
+                        "bbox": tbl.bbox,
+                        "data": {"headers": headers, "rows": rows},
+                    })
+    except Exception as e:
+        print(f"    ⚠  表格提取例外：{e}")
+
+    return results
+
+def _table_is_meaningful(table_data: dict) -> bool:
+    """
+    簡單品質過濾：排除 PDF 排版雜訊（例如「Fee C」這類欄位）。
+    要求：
+    - 非空白格 >= 6，或有效列數 >= 2（非空白格 >= 4）
+    - 若只含 ASCII 字元（很可能是 PDF 頁尾雜訊），也排除
+    """
+    all_cells = []
+    if table_data.get("headers"):
+        all_cells.extend(table_data["headers"])
+    for row in table_data.get("rows", []):
+        all_cells.extend(row)
+
+    non_empty = [c for c in all_cells if c and c.strip()]
+    if len(non_empty) < 4:
+        return False
+
+    # 若所有有效格都是純 ASCII（無中文/日文/韓文），很可能是排版雜訊
+    all_text = "".join(non_empty)
+    has_cjk = bool(re.search(r'[一-鿿　-〿゠-ヿぁ-ゟ]', all_text))
+    if not has_cjk and len(all_text) < 30:
+        return False
+
+    return True
+
+def find_question_table(
+    q_num: int,
+    q_text: str,
+    all_tables: list[dict],
+    question_page_hint: int | None = None,
+) -> dict | None:
+    """
+    在 all_tables 中找與 q_num 最相關的表格：
+    - 有明確「如表」「下表」提示且只有一個有效表格時，直接採用
+    - 否則依關鍵字比對分數決定
+    傳回 table data dict 或 None。
+    """
+    if not all_tables:
+        return None
+
+    TABLE_HINT_RE = re.compile(r'如[右左上下]?表|下表|右表|以下.*表格|根據.*表|表\([一二三四五六七八九十\d]+\)')
+
+    has_hint = bool(TABLE_HINT_RE.search(q_text))
+
+    # 過濾品質不佳的表格
+    quality_tables = [t for t in all_tables if _table_is_meaningful(t["data"])]
+
+    if not quality_tables:
+        return None
+
+    if has_hint and len(quality_tables) == 1:
+        return quality_tables[0]["data"]
+
+    # 依關鍵字比對分數決定
+    key_words = [w for w in re.findall(r'[一-鿿]{2,}', q_text) if len(w) >= 2][:8]
+    best = None
+    best_score = 0
+    for t in quality_tables:
+        flat = " ".join(
+            cell
+            for row in ([t["data"]["headers"]] + t["data"]["rows"])
+            for cell in row
+        )
+        score = sum(1 for w in key_words if w in flat)
+        if score > best_score:
+            best_score = score
+            best = t["data"]
+
+    if best_score >= 2:
+        return best
+
+    return None
+
+# ─────────────────────────────────────────────
+# 圖形標記
+# ─────────────────────────────────────────────
+
+FIGURE_HINT_RE = re.compile(r'如[右左上下]?圖|下圖|右圖|附圖|見圖|參考圖|根據圖')
+
+def has_figure_hint(text: str) -> bool:
+    return bool(FIGURE_HINT_RE.search(text))
+
+# ─────────────────────────────────────────────
+# 題目解析（pdfplumber 文字抽取 + 題組 + 表格 + 圖形）
 # ─────────────────────────────────────────────
 
 def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
-    """從試題 PDF 抽取選擇題文字，回傳 [{number, question_text, options}]
-
-    策略：以「(A)」為錨點，向前找題號，向後找 B/C/D 選項。
-    適用於中英文各科，不依賴特定標頭文字。
     """
+    從試題 PDF 抽取選擇題，回傳：
+    [{number, question_text, options,
+      group_id, group_premise, group_order,
+      table_json, has_figure}]
+    """
+    # ── 1. 逐頁取出文字與表格 ──────────────────────
+    all_lines: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        all_lines = []
         for page in pdf.pages:
             text = page.extract_text() or ""
             all_lines.extend(text.split("\n"))
 
-    # 過濾：去除純空白或頁碼行
+    # ── 2. 過濾無用行 ───────────────────────────────
     PAGE_NUM  = re.compile(r'^\d{1,3}$')
     SKIP_KEYS = ["請翻頁", "請聽", "作答說明", "聽力測驗"]
     filtered: list[str] = []
@@ -331,18 +559,20 @@ def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
             continue
         filtered.append(s)
 
-    # 用 (A) 出現位置切分
-    # 找每個 (A) 前面最近的「題號行」: 獨立的 "N." 或 "N. 文字"
-    Q_LINE  = re.compile(r'^(\d{1,2})[.．]\s*(.*)')  # 行首: N. [text]
-    Q_ALONE = re.compile(r'^(\d{1,2})[.．]$')        # 行首: N. (孤行)
+    # ── 3. 題組偵測 ─────────────────────────────────
+    group_map = detect_groups(filtered)
 
-    # 先找所有 (A) 的索引
+    # ── 4. 表格提取 ─────────────────────────────────
+    all_tables = extract_page_tables(pdf_bytes)
+
+    # ── 5. 選擇題解析（原有邏輯）──────────────────────
+    Q_LINE  = re.compile(r'^(\d{1,2})[.．]\s*(.*)')
+
     opt_a_indices = [i for i, l in enumerate(filtered) if l.startswith('(A)')]
 
     seen: dict[int, dict] = {}
 
     for ai in opt_a_indices:
-        # 往回找題號（最多找 20 行）
         q_num = None
         q_start_idx = ai
         for back in range(1, min(21, ai + 1)):
@@ -354,14 +584,12 @@ def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
                     q_num = n
                     q_start_idx = ai - back
                     break
-            # 如果遇到 (D) 則停止（說明是上一題的選項）
             if candidate.startswith('(D)'):
                 break
 
         if q_num is None:
             continue
 
-        # 收集 B、C、D 選項
         opts: dict[str, str] = {'A': filtered[ai][4:].strip()}
         li = ai + 1
         for letter in 'BCD':
@@ -371,19 +599,19 @@ def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
                     opts[letter] = candidate[4:].strip()
                     li += 1
                     break
-                # 如果遇到下一個題號，停止
-                if Q_LINE.match(candidate) and int(Q_LINE.match(candidate).group(1)) > q_num:
-                    break
-                # 若是繼續選項文字，append 到上一個選項
+                if Q_LINE.match(candidate):
+                    try:
+                        if int(Q_LINE.match(candidate).group(1)) > q_num:
+                            break
+                    except Exception:
+                        pass
                 if letter in opts and candidate and not candidate.startswith('('):
                     prev = opts[letter]
                     if prev:
                         opts[letter] = prev + ' ' + candidate
                 li += 1
 
-        # 題幹：從 q_start_idx 到 (A) 之前的內容
         stem_lines = filtered[q_start_idx:ai]
-        # 去掉題號前綴
         first = stem_lines[0] if stem_lines else ''
         m = Q_LINE.match(first)
         if m:
@@ -395,16 +623,43 @@ def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
         if len(stem) < 3:
             continue
 
-        q = {
-            "number": q_num,
-            "question_text": stem,
-            "options": opts if len(opts) >= 2 else None,
-        }
-        # 取最長的題幹
+        # 取最長題幹
         if q_num not in seen or len(stem) > len(seen[q_num]["question_text"]):
-            seen[q_num] = q
+            seen[q_num] = {
+                "number":       q_num,
+                "question_text": stem,
+                "options":      opts if len(opts) >= 2 else None,
+            }
 
-    return sorted(seen.values(), key=lambda x: x["number"])
+    questions = sorted(seen.values(), key=lambda x: x["number"])
+
+    # ── 6. 附加題組、表格、圖形資訊 ──────────────────
+    for q in questions:
+        num  = q["number"]
+        text = q["question_text"]
+
+        # 題組
+        if num in group_map:
+            ginfo = group_map[num]
+            q["group_id"]      = ginfo["group_id"]
+            q["group_premise"] = ginfo["group_premise"]
+            q["group_order"]   = ginfo["group_order"]
+        else:
+            q["group_id"]      = None
+            q["group_premise"] = None
+            q["group_order"]   = 0
+
+        # 表格
+        table_data = find_question_table(num, text, all_tables)
+        if table_data:
+            q["table_json"] = json.dumps(table_data, ensure_ascii=False)
+        else:
+            q["table_json"] = None
+
+        # 圖形標記
+        q["has_figure"] = has_figure_hint(text)
+
+    return questions
 
 # ─────────────────────────────────────────────
 # 資料庫
@@ -440,6 +695,11 @@ CREATE TABLE IF NOT EXISTS question_bank (
     difficulty            TEXT    DEFAULT 'medium',
     explanation           TEXT,
     first_attempt_correct INTEGER,
+    group_id              TEXT,
+    group_premise         TEXT,
+    group_order           INTEGER DEFAULT 0,
+    table_json            TEXT,
+    figure_image_name     TEXT,
     created_at            TEXT    DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS practice_sessions (
@@ -461,7 +721,25 @@ CREATE TABLE IF NOT EXISTS practice_attempts (
 
 def init_db(conn):
     conn.executescript(SCHEMA)
+    # 若 DB 已存在但缺少新欄位，自動補齊（向前相容）
+    _ensure_columns(conn)
     conn.commit()
+
+def _ensure_columns(conn):
+    """為舊版 DB 補充新欄位（idempotent）。"""
+    new_cols = [
+        ("group_id",          "TEXT"),
+        ("group_premise",     "TEXT"),
+        ("group_order",       "INTEGER DEFAULT 0"),
+        ("table_json",        "TEXT"),
+        ("figure_image_name", "TEXT"),
+    ]
+    cur = conn.execute("PRAGMA table_info(question_bank)")
+    existing = {row[1] for row in cur.fetchall()}
+    for col_name, col_def in new_cols:
+        if col_name not in existing:
+            conn.execute(f"ALTER TABLE question_bank ADD COLUMN {col_name} {col_def}")
+            print(f"    ℹ  已補充欄位：{col_name}")
 
 def already_processed(conn, year, subject):
     return conn.execute(
@@ -510,7 +788,6 @@ def main():
                 except Exception as e:
                     print(f"  ⚠  答案解析失敗：{e}")
         elif pr_id:
-            # 嘗試從通過率 PDF 同時解析答案（部分年份合在一起）
             pr_bytes = download_gdrive(pr_id, f"{year}通過率/答案")
             if pr_bytes:
                 try:
@@ -539,7 +816,12 @@ def main():
             except Exception as e:
                 print(f" ⚠  解析失敗：{e}")
                 continue
-            print(f" → {len(questions)} 題")
+
+            # 統計題組/表格/圖形
+            n_groups  = len({q.get("group_id") for q in questions if q.get("group_id")})
+            n_tables  = sum(1 for q in questions if q.get("table_json"))
+            n_figures = sum(1 for q in questions if q.get("has_figure"))
+            print(f" → {len(questions)} 題  題組:{n_groups}  表格:{n_tables}  有圖:{n_figures}")
 
             # 存進 exams 表
             raw_json = json.dumps({"subject": subject, "questions": []}, ensure_ascii=False)
@@ -561,15 +843,16 @@ def main():
                 diff = estimate_difficulty(pr)
 
                 vol, chnum, chname = classify_chapter(subject, q["question_text"])
-                topic = chname  # 用章節名作知識點（後續可補充）
+                topic = chname
 
                 conn.execute(
                     """INSERT INTO question_bank
                        (source_exam_id, year, subject, volume, chapter_num, chapter_name,
                         topic, question_num, question_text, question_type,
                         option_a, option_b, option_c, option_d,
-                        correct_answer, pass_rate, difficulty, explanation, first_attempt_correct)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        correct_answer, pass_rate, difficulty, explanation, first_attempt_correct,
+                        group_id, group_premise, group_order, table_json, figure_image_name)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         exam_id, year, subject,
                         vol or None, chnum or None, chname or None,
@@ -577,6 +860,11 @@ def main():
                         q["question_text"], "選擇題",
                         opts.get("A"), opts.get("B"), opts.get("C"), opts.get("D"),
                         ans, pr, diff, "", None,
+                        q.get("group_id"),
+                        q.get("group_premise"),
+                        q.get("group_order", 0),
+                        q.get("table_json"),
+                        None,  # figure_image_name: 文字解析無法取得圖片，留 NULL
                     )
                 )
                 inserted += 1
@@ -585,9 +873,11 @@ def main():
             print(f"    ✅ {inserted} 題入庫")
 
     # 統計
-    total  = conn.execute("SELECT COUNT(*) FROM question_bank").fetchone()[0]
-    w_pr   = conn.execute("SELECT COUNT(*) FROM question_bank WHERE pass_rate IS NOT NULL").fetchone()[0]
-    w_ans  = conn.execute("SELECT COUNT(*) FROM question_bank WHERE correct_answer IS NOT NULL").fetchone()[0]
+    total   = conn.execute("SELECT COUNT(*) FROM question_bank").fetchone()[0]
+    w_pr    = conn.execute("SELECT COUNT(*) FROM question_bank WHERE pass_rate IS NOT NULL").fetchone()[0]
+    w_ans   = conn.execute("SELECT COUNT(*) FROM question_bank WHERE correct_answer IS NOT NULL").fetchone()[0]
+    w_group = conn.execute("SELECT COUNT(*) FROM question_bank WHERE group_id IS NOT NULL").fetchone()[0]
+    w_table = conn.execute("SELECT COUNT(*) FROM question_bank WHERE table_json IS NOT NULL").fetchone()[0]
     conn.close()
 
     print(f"\n{'='*55}")
@@ -595,6 +885,8 @@ def main():
     print(f"   總題數：{total}")
     print(f"   有通過率：{w_pr}")
     print(f"   有答案：{w_ans}")
+    print(f"   題組題：{w_group}")
+    print(f"   含表格：{w_table}")
     print(f"   輸出：{DB_PATH}")
     print(f"\n下一步：")
     print(f"   cp {DB_PATH} ../exam_data.db")

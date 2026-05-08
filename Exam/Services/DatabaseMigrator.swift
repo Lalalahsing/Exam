@@ -129,24 +129,46 @@ enum DatabaseMigrator {
 
     @MainActor
     private static func migrateQuestionBank(db: OpaquePointer?, context: ModelContext, examIdMap: [Int64: UUID]) {
-        // 檢查是否有新欄位（歷屆題庫版 schema）
-        let hasNewColumns = columnExists(db: db, table: "question_bank", column: "year")
+        // 檢查各版本欄位是否存在
+        let hasYearColumn    = columnExists(db: db, table: "question_bank", column: "year")
+        let hasGroupColumns  = columnExists(db: db, table: "question_bank", column: "group_id")
+        let hasTableColumn   = columnExists(db: db, table: "question_bank", column: "table_json")
+        let hasFigureColumn  = columnExists(db: db, table: "question_bank", column: "figure_image_name")
 
-        let sql = hasNewColumns ? """
-            SELECT source_exam_id, subject, volume, chapter_num, chapter_name, topic,
-                   question_num, question_text, question_type,
-                   option_a, option_b, option_c, option_d,
-                   correct_answer, difficulty, first_attempt_correct, created_at,
-                   year, pass_rate, explanation
-            FROM question_bank
-        """ : """
-            SELECT source_exam_id, subject, volume, chapter_num, chapter_name, topic,
-                   question_num, question_text, question_type,
-                   option_a, option_b, option_c, option_d,
-                   correct_answer, difficulty, first_attempt_correct, created_at
-            FROM question_bank
-        """
+        // 固定欄位（索引 0-16）+ 按需追加，回傳 (sql, colIndex字典)
+        var cols = [
+            "source_exam_id",   // 0
+            "subject",          // 1
+            "volume",           // 2
+            "chapter_num",      // 3
+            "chapter_name",     // 4
+            "topic",            // 5
+            "question_num",     // 6
+            "question_text",    // 7
+            "question_type",    // 8
+            "option_a",         // 9
+            "option_b",         // 10
+            "option_c",         // 11
+            "option_d",         // 12
+            "correct_answer",   // 13
+            "difficulty",       // 14
+            "first_attempt_correct", // 15
+            "created_at",       // 16
+        ]
+        var idx: [String: Int32] = [:]
+        for (i, c) in cols.enumerated() { idx[c] = Int32(i) }
 
+        func append(_ colName: String) {
+            idx[colName] = Int32(cols.count)
+            cols.append(colName)
+        }
+
+        if hasYearColumn   { append("year"); append("pass_rate"); append("explanation") }
+        if hasGroupColumns { append("group_id"); append("group_premise"); append("group_order") }
+        if hasTableColumn  { append("table_json") }
+        if hasFigureColumn { append("figure_image_name") }
+
+        let sql = "SELECT \(cols.joined(separator: ", ")) FROM question_bank"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(stmt) }
@@ -158,10 +180,22 @@ enum DatabaseMigrator {
             let firstAttemptRaw = sqlite3_column_type(stmt, 15) == SQLITE_NULL
                 ? nil : sqlite3_column_int(stmt, 15) == 1
 
-            let year        = hasNewColumns ? Int(sqlite3_column_int(stmt, 17)) : 0
-            let passRateRaw = hasNewColumns && sqlite3_column_type(stmt, 18) != SQLITE_NULL
-                ? sqlite3_column_double(stmt, 18) : -1.0
-            let explanation = hasNewColumns ? columnText(stmt, 19) : ""
+            let year: Int = {
+                guard let i = idx["year"] else { return 0 }
+                return Int(sqlite3_column_int(stmt, i))
+            }()
+            let passRateRaw: Double = {
+                guard let i = idx["pass_rate"],
+                      sqlite3_column_type(stmt, i) != SQLITE_NULL else { return -1.0 }
+                return sqlite3_column_double(stmt, i)
+            }()
+            let explanation: String = idx["explanation"].map { columnText(stmt, $0) } ?? ""
+
+            let groupId:      String? = idx["group_id"].flatMap      { optionalText(stmt, $0) }
+            let groupPremise: String? = idx["group_premise"].flatMap  { optionalText(stmt, $0) }
+            let groupOrder:   Int     = idx["group_order"].map        { Int(sqlite3_column_int(stmt, $0)) } ?? 0
+            let tableJson:    String? = idx["table_json"].flatMap     { optionalText(stmt, $0) }
+            let figureImageName: String? = idx["figure_image_name"].flatMap { optionalText(stmt, $0) }
 
             let item = QuestionBankItem(
                 sourceExamId: sourceExamId,
@@ -182,7 +216,12 @@ enum DatabaseMigrator {
                 passRate:      passRateRaw,
                 difficulty:    columnText(stmt, 14),
                 explanation:   explanation,
-                firstAttemptCorrect: firstAttemptRaw
+                firstAttemptCorrect: firstAttemptRaw,
+                groupId:       groupId,
+                groupPremise:  groupPremise,
+                groupOrder:    groupOrder,
+                figureImageName: figureImageName,
+                tableJson:     tableJson
             )
             item.createdAt = parseDate(columnText(stmt, 16)) ?? Date()
             context.insert(item)
