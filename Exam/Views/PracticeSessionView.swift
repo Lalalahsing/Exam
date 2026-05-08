@@ -444,9 +444,10 @@ struct PracticeSessionView: View {
 
     private func setupSession() {
         let pool = allItems.filter { item in
-            let matchSub = config.subject == "全部" || item.subject == config.subject
-            let matchVol = config.volume == nil || item.volume == config.volume
-            return matchSub && matchVol
+            let matchSub  = config.subject == "全部" || item.subject == config.subject
+            let matchVol  = config.volume == nil     || item.volume  == config.volume
+            let matchYear = config.year   == nil     || item.year    == config.year
+            return matchSub && matchVol && matchYear
         }
         units = WeightingService.selectUnits(from: pool, count: config.count)
         let totalQ = units.reduce(0) { $0 + $1.questions.count }
