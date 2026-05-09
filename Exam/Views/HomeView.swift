@@ -11,9 +11,9 @@ struct HomeView: View {
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var isAnalyzing = false
     @State private var analysisError: String?
-    @State private var showImagePicker = false
     @State private var showCamera = false
-    @State private var showUploadSheet = false
+    @State private var showPhotoPicker = false
+    @State private var showUploadOptions = false
     @State private var showAPIKeyPrompt = false
     @State private var navigateToResult: Exam?
 
@@ -71,8 +71,24 @@ struct HomeView: View {
         .navigationDestination(for: Exam.self) { exam in
             ExamResultView(exam: exam)
         }
-        .sheet(isPresented: $showUploadSheet) {
-            uploadOptionsSheet
+        .confirmationDialog("選擇來源", isPresented: $showUploadOptions, titleVisibility: .visible) {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("拍照") { showCamera = true }
+            }
+            Button("從相簿選擇（可多張）") { showPhotoPicker = true }
+            Button("取消", role: .cancel) {}
+        }
+        .photosPicker(isPresented: $showPhotoPicker,
+                      selection: $selectedPhotoItems,
+                      maxSelectionCount: 10,
+                      matching: .images,
+                      photoLibrary: .shared())
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPicker { image in
+                showCamera = false
+                if let image { Task { await analyzeImages([image]) } }
+            }
+            .ignoresSafeArea()
         }
         .sheet(isPresented: $showAPIKeyPrompt) {
             APIKeyPromptSheet(isPresented: $showAPIKeyPrompt)
@@ -100,7 +116,7 @@ struct HomeView: View {
             if apiKey.isEmpty {
                 showAPIKeyPrompt = true
             } else {
-                showUploadSheet = true
+                showUploadOptions = true
             }
         } label: {
             HStack {
@@ -122,40 +138,6 @@ struct HomeView: View {
             .padding(.vertical, 4)
         }
         .disabled(isAnalyzing)
-    }
-
-    // MARK: - Upload Options Sheet
-
-    private var uploadOptionsSheet: some View {
-        NavigationStack {
-            List {
-                Section {
-                    // 相機拍照
-                    Label("拍照", systemImage: "camera.fill")
-                        .onTapGesture {
-                            showUploadSheet = false
-                            showCamera = true
-                        }
-
-                    // 相簿選擇（可多選）
-                    PhotosPicker(selection: $selectedPhotoItems,
-                                 maxSelectionCount: 10,
-                                 matching: .images,
-                                 photoLibrary: .shared()) {
-                        Label("從相簿選擇（可多張）", systemImage: "photo.on.rectangle.angled")
-                    }
-                    .simultaneousGesture(TapGesture().onEnded { showUploadSheet = false })
-                }
-            }
-            .navigationTitle("選擇圖片")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { showUploadSheet = false }
-                }
-            }
-        }
-        .presentationDetents([.medium])
     }
 
     // MARK: - Analysis
@@ -413,6 +395,40 @@ struct APIKeyPromptSheet: View {
             }
         }
         .presentationDetents([.medium])
+    }
+}
+
+// MARK: - 相機 Picker（UIImagePickerController 包裝）
+
+struct CameraPicker: UIViewControllerRepresentable {
+    let onPicked: (UIImage?) -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = UIImagePickerController.isSourceTypeAvailable(.camera) ? .camera : .photoLibrary
+        picker.allowsEditing = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPicked: onPicked) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let onPicked: (UIImage?) -> Void
+        init(onPicked: @escaping (UIImage?) -> Void) { self.onPicked = onPicked }
+
+        func imagePickerController(_ picker: UIImagePickerController,
+                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            picker.dismiss(animated: true)
+            onPicked(info[.originalImage] as? UIImage)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+            onPicked(nil)
+        }
     }
 }
 
