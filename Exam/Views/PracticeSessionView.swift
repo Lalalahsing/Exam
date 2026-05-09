@@ -453,10 +453,17 @@ struct PracticeSessionView: View {
 
     private func setupSession() {
         let pool = allItems.filter { item in
-            let matchSub  = config.subject == "全部" || item.subject == config.subject
-            let matchVol  = config.volume == nil     || item.volume  == config.volume
-            let matchYear = config.year   == nil     || item.year    == config.year
-            return matchSub && matchVol && matchYear
+            let matchSub   = config.subject == "全部" || item.subject == config.subject
+            let matchVol   = config.volume == nil     || item.volume  == config.volume
+            let matchYear  = config.year   == nil     || item.year    == config.year
+            let matchGroup: Bool = {
+                switch config.groupFilter {
+                case .all:       return true
+                case .groupOnly: return !(item.groupId ?? "").isEmpty
+                case .noGroup:   return (item.groupId ?? "").isEmpty
+                }
+            }()
+            return matchSub && matchVol && matchYear && matchGroup
         }
         units = WeightingService.selectUnits(from: pool, count: config.count)
         let totalQ = units.reduce(0) { $0 + $1.questions.count }

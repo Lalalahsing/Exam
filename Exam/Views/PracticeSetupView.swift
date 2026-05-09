@@ -1,6 +1,20 @@
 import SwiftUI
 import SwiftData
 
+enum GroupFilter: String, CaseIterable, Identifiable {
+    case all        = "全部"
+    case groupOnly  = "只選題組"
+    case noGroup    = "排除題組"
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .all:       return "square.stack"
+        case .groupOnly: return "list.bullet.rectangle.portrait"
+        case .noGroup:   return "doc.text"
+        }
+    }
+}
+
 struct PracticeSetupView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var allItems: [QuestionBankItem]
@@ -8,6 +22,7 @@ struct PracticeSetupView: View {
     @State private var selectedSubject = "全部"
     @State private var selectedVolume = "全部"
     @State private var selectedYear = 0       // 0 = 全部
+    @State private var groupFilter: GroupFilter = .all
     @State private var questionCount = 10
     @State private var navigateToSession: PracticeSessionConfig?
 
@@ -24,10 +39,17 @@ struct PracticeSetupView: View {
 
     private var poolCount: Int {
         let filtered = allItems.filter { item in
-            let matchSub  = selectedSubject == "全部" || item.subject == selectedSubject
-            let matchVol  = selectedVolume  == "全部" || item.volume  == selectedVolume
-            let matchYear = selectedYear == 0         || item.year    == selectedYear
-            return matchSub && matchVol && matchYear
+            let matchSub   = selectedSubject == "全部" || item.subject == selectedSubject
+            let matchVol   = selectedVolume  == "全部" || item.volume  == selectedVolume
+            let matchYear  = selectedYear == 0         || item.year    == selectedYear
+            let matchGroup: Bool = {
+                switch groupFilter {
+                case .all:       return true
+                case .groupOnly: return !(item.groupId ?? "").isEmpty
+                case .noGroup:   return (item.groupId ?? "").isEmpty
+                }
+            }()
+            return matchSub && matchVol && matchYear && matchGroup
         }
         let groupIds = Set(filtered.compactMap { $0.groupId }.filter { !$0.isEmpty })
         let standaloneCount = filtered.filter { ($0.groupId ?? "").isEmpty }.count
@@ -51,6 +73,12 @@ struct PracticeSetupView: View {
                     }
                 }
                 .disabled(availableYears.isEmpty)
+
+                Picker("題組", selection: $groupFilter) {
+                    ForEach(GroupFilter.allCases) { f in
+                        Label(f.rawValue, systemImage: f.icon).tag(f)
+                    }
+                }
             }
 
             Section {
@@ -84,6 +112,7 @@ struct PracticeSetupView: View {
                         subject: selectedSubject,
                         volume: selectedVolume == "全部" ? nil : selectedVolume,
                         year: selectedYear == 0 ? nil : selectedYear,
+                        groupFilter: groupFilter,
                         count: max(1, min(questionCount, upper))
                     )
                 } label: {
@@ -106,7 +135,8 @@ struct PracticeSessionConfig: Hashable, Identifiable {
     let id = UUID()
     let subject: String
     let volume: String?
-    let year: Int?        // nil = 不限年份
+    let year: Int?              // nil = 不限年份
+    let groupFilter: GroupFilter
     let count: Int
 }
 
