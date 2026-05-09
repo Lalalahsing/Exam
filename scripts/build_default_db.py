@@ -604,85 +604,210 @@ def has_figure_hint(text: str) -> bool:
 # ─────────────────────────────────────────────
 # 圖形提取（pymupdf）
 # ─────────────────────────────────────────────
+#
+# 策略：依「題目所在 y 區域」精準定位
+#   1. parse_questions_from_pdf 先用 pdfplumber 取得每題在 PDF 的 (page, y_top)
+#   2. 將同一頁中相鄰題的 y 範圍視為該題作答區
+#   3. 在該區域內收集 vector drawings + 嵌入 images
+#   4. 過濾雜訊（過小、整頁框線、與文字字框完全重合）
+#   5. 取剩餘元素的聯集 bbox 作為圖形範圍
+#
 
-def extract_figure(pdf_bytes: bytes, page_indices: list[int],
-                   year: int, subject: str, q_num: int) -> str | None:
+def find_question_positions(pdf_bytes: bytes) -> dict[int, tuple[int, float]]:
     """
-    從 PDF 的指定頁面中擷取圖形，儲存至 BUNDLED_FIGURES_DIR。
-    傳回圖檔名稱（如已存在則直接回傳），失敗回傳 None。
+    回傳 {q_num: (page_idx, y_top)}，
+    為每一題在 PDF 內的起始位置（首次出現視為起點）。
+    """
+    Q_RE = re.compile(r'^(\d{1,2})[.．]')
+    seen: dict[int, tuple[int, float]] = {}
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for pi, page in enumerate(pdf.pages):
+                try:
+                    words = page.extract_words(use_text_flow=False, keep_blank_chars=False) or []
+                except Exception:
+                    words = []
+                # 依 top 分行
+                lines: list[tuple[float, list[dict]]] = []
+                for w in sorted(words, key=lambda w: (round(w["top"], 1), w["x0"])):
+                    if lines and abs(w["top"] - lines[-1][0]) < 3:
+                        lines[-1][1].append(w)
+                    else:
+                        lines.append((w["top"], [w]))
+                for top, ws in lines:
+                    ws_sorted = sorted(ws, key=lambda w: w["x0"])
+                    line_text = "".join(w["text"] for w in ws_sorted)
+                    m = Q_RE.match(line_text)
+                    if m:
+                        n = int(m.group(1))
+                        if 1 <= n <= 60 and n not in seen:
+                            seen[n] = (pi, float(top))
+    except Exception:
+        pass
+    return seen
+
+
+def _y_ranges(positions: dict[int, tuple[int, float]],
+              page_heights: dict[int, float]) -> dict[int, tuple[int, float, float]]:
+    """
+    依各題在頁中的 y_top，推算每題的 (page_idx, y_start, y_end)：
+    - y_end = 同頁下一題的 y_top；若該題是最後一題則 = 頁底
+    """
+    by_page: dict[int, list[tuple[int, float]]] = {}
+    for n, (pi, y) in positions.items():
+        by_page.setdefault(pi, []).append((n, y))
+    for pi in by_page:
+        by_page[pi].sort(key=lambda t: t[1])
+
+    out: dict[int, tuple[int, float, float]] = {}
+    for pi, lst in by_page.items():
+        ph = page_heights.get(pi, 842.0)
+        for i, (n, y) in enumerate(lst):
+            y_end = lst[i + 1][1] if i + 1 < len(lst) else ph
+            out[n] = (pi, y, y_end)
+    return out
+
+
+def extract_figure(doc, q_num: int, region: tuple[int, float, float],
+                   year: int, subject: str) -> str | None:
+    """
+    依題目 (page, y_start, y_end) 區域擷取圖形，存檔並回傳檔名。
+    若該區域實際無有效圖元素則回 None（避免假陽性）。
     """
     name = f"bundled_{year}_{subject}_{q_num:02d}_fig.jpg"
     out_path = BUNDLED_FIGURES_DIR / name
     if out_path.exists():
-        return name          # 已提取過，直接重用
+        return name
 
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    except Exception:
+    page_idx, y_start, y_end = region
+    if page_idx < 0 or page_idx >= len(doc):
         return None
-
-    # 逐頁嘗試（question 所在頁及前一頁）
-    for pi in page_indices:
-        if pi < 0 or pi >= len(doc):
-            continue
-        result = _extract_figure_from_page(doc, pi, out_path)
-        if result:
-            doc.close()
-            return name
-
-    doc.close()
+    if _extract_figure_in_region(doc, page_idx, y_start, y_end, out_path):
+        return name
     return None
 
 
-def _extract_figure_from_page(doc, page_idx: int, out_path: Path) -> bool:
-    """在單一 PDF 頁面中定位並儲存圖形，成功回傳 True。"""
+def _extract_figure_in_region(doc, page_idx: int,
+                              y_start: float, y_end: float,
+                              out_path: Path) -> bool:
     page      = doc[page_idx]
     page_rect = page.rect
+    pw, ph    = page_rect.width, page_rect.height
 
-    # 取得所有嵌入圖片的 bounding box（pt 座標）
-    imgs = page.get_image_info(hashes=False)
-
-    # 最小尺寸門檻：50×40 pt，面積 ≥ 2500 sq pt
-    MIN_W, MIN_H, MIN_AREA = 50, 40, 2500
-    meaningful = [
-        img for img in imgs
-        if img.get("bbox")
-        and (img["bbox"][2] - img["bbox"][0]) >= MIN_W
-        and (img["bbox"][3] - img["bbox"][1]) >= MIN_H
-        and (img["bbox"][2] - img["bbox"][0]) * (img["bbox"][3] - img["bbox"][1]) >= MIN_AREA
-    ]
-
-    if not meaningful:
+    # y 區域 padding：上下各放寬 4pt 容錯
+    rs = max(0.0, y_start - 4)
+    re_ = min(ph, y_end + 4)
+    if re_ - rs < 30:
         return False
 
-    # 計算所有圖片的聯集 bounding box
-    x0 = min(i["bbox"][0] for i in meaningful)
-    y0 = min(i["bbox"][1] for i in meaningful)
-    x1 = max(i["bbox"][2] for i in meaningful)
-    y1 = max(i["bbox"][3] for i in meaningful)
+    # ── 蒐集圖元素 ──────────────────────────
+    items: list[tuple[float, float, float, float]] = []
 
-    union_area = (x1 - x0) * (y1 - y0)
-    page_area  = page_rect.width * page_rect.height
+    # 1. 嵌入點陣圖
+    for img in page.get_image_info(hashes=False) or []:
+        bbox = img.get("bbox")
+        if not bbox:
+            continue
+        x0, y0, x1, y1 = bbox
+        if y1 <= rs or y0 >= re_:
+            continue
+        if (x1 - x0) < 25 or (y1 - y0) < 20:
+            continue
+        # 將圖元素裁切到區域內
+        items.append((x0, max(y0, rs), x1, min(y1, re_)))
 
-    # 若聯集超過頁面 80% → 可能是背景或裝飾，跳過
-    if union_area > page_area * 0.80:
+    # 2. 向量繪圖（線、路徑、填色）
+    for d in page.get_drawings() or []:
+        rect = d.get("rect")
+        if not rect:
+            continue
+        x0, y0, x1, y1 = rect.x0, rect.y0, rect.x1, rect.y1
+        w, h = x1 - x0, y1 - y0
+        if w <= 0 or h <= 0:
+            continue
+        if y1 <= rs or y0 >= re_:
+            continue
+        # 過濾雜訊：
+        #   過小元素
+        if w < 4 and h < 4:
+            continue
+        #   整頁框 / 頁首頁尾橫線：跨頁寬度 > 85% 且 高度 < 4pt
+        if w > pw * 0.85 and h < 4:
+            continue
+        if h > ph * 0.85 and w < 4:
+            continue
+        items.append((x0, max(y0, rs), x1, min(y1, re_)))
+
+    if not items:
         return False
 
-    # 加 padding (10 pt ≈ 3.5mm)
-    pad  = 10
+    # ── 過濾與文字字框完全重合的元素（多為底線、刪除線）─
+    try:
+        words = page.get_text("words") or []  # (x0,y0,x1,y1,word,...)
+    except Exception:
+        words = []
+    word_rects = [(w[0], w[1], w[2], w[3]) for w in words
+                  if w[3] > rs and w[1] < re_]
+
+    def overlaps_any_word(b):
+        bx0, by0, bx1, by1 = b
+        ba = max(1e-3, (bx1 - bx0) * (by1 - by0))
+        for tx0, ty0, tx1, ty1 in word_rects:
+            ix0, iy0 = max(bx0, tx0), max(by0, ty0)
+            ix1, iy1 = min(bx1, tx1), min(by1, ty1)
+            if ix1 > ix0 and iy1 > iy0:
+                ia = (ix1 - ix0) * (iy1 - iy0)
+                # 元素 90% 落在某一文字字框內 → 視為文字裝飾
+                if ia / ba >= 0.9:
+                    return True
+        return False
+
+    items = [b for b in items if not overlaps_any_word(b)]
+    if not items:
+        return False
+
+    # ── 取聯集 bbox ───────────────────────────
+    x0 = min(b[0] for b in items)
+    y0 = min(b[1] for b in items)
+    x1 = max(b[2] for b in items)
+    y1 = max(b[3] for b in items)
+
+    fw, fh = x1 - x0, y1 - y0
+    if fw < 30 or fh < 30:
+        return False
+
+    # 圖形不應佔滿整個區域：若聯集 ≥ 區域 95% 且區域接近整頁，視為誤判
+    region_h = re_ - rs
+    if fh / region_h > 0.97 and region_h > ph * 0.7:
+        return False
+
+    # ── 把鄰近的「圖內文字標籤」一併納入 bbox ────
+    # 文字字框若距離當前圖框 ≤ 10pt，視為圖內標籤
+    for tx0, ty0, tx1, ty1 in word_rects:
+        if tx1 < x0 - 12 or tx0 > x1 + 12:
+            continue
+        if ty1 < y0 - 12 or ty0 > y1 + 12:
+            continue
+        # 如果該文字水平範圍幾乎佔滿題目寬度 → 多半是題幹/選項，跳過
+        if (tx1 - tx0) > pw * 0.6:
+            continue
+        x0 = min(x0, tx0); y0 = min(y0, ty0)
+        x1 = max(x1, tx1); y1 = max(y1, ty1)
+
+    pad = 5
     clip = fitz.Rect(
-        max(0,               x0 - pad),
-        max(0,               y0 - pad),
-        min(page_rect.width,  x1 + pad),
-        min(page_rect.height, y1 + pad),
+        max(0,  x0 - pad),
+        max(rs, y0 - pad),
+        min(pw, x1 + pad),
+        min(re_, y1 + pad),
     )
+    if clip.width < 40 or clip.height < 40:
+        return False
 
-    # 2× scale ≈ 144 DPI（pdf 預設 72 DPI）
-    mat = fitz.Matrix(2.0, 2.0)
-    pix = page.get_pixmap(matrix=mat, clip=clip, colorspace=fitz.csRGB, alpha=False)
-
-    # 最小像素門檻：避免儲存過小的噪音圖
-    if pix.width < 60 or pix.height < 60:
+    mat = fitz.Matrix(2.5, 2.5)         # ≈ 180 DPI
+    pix = page.get_pixmap(matrix=mat, clip=clip,
+                          colorspace=fitz.csRGB, alpha=False)
+    if pix.width < 80 or pix.height < 60:
         return False
 
     pix.save(str(out_path), jpg_quality=88)
@@ -699,13 +824,15 @@ def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
       group_id, group_premise, group_order,
       table_json, has_figure}]
     """
-    # ── 1. 逐頁取出文字，同時記錄行號→頁碼對照 ────────
+    # ── 1. 逐頁取出文字，同時記錄行號→頁碼對照、各頁高度 ─
     filtered: list[str] = []
     line_page: list[int] = []          # filtered[i] 所在的 PDF 頁碼
+    page_heights: dict[int, float] = {}
     PAGE_NUM  = re.compile(r'^\d{1,3}$')
     SKIP_KEYS = ["請翻頁", "請聽", "作答說明", "聽力測驗"]
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for pi, page in enumerate(pdf.pages):
+            page_heights[pi] = float(page.height)
             text = page.extract_text() or ""
             for raw_line in text.split("\n"):
                 s = raw_line.strip()
@@ -715,6 +842,10 @@ def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
                     continue
                 filtered.append(s)
                 line_page.append(pi)
+
+    # ── 2. 取得每題的 (page_idx, y_top) 用於後續圖形定位 ──
+    q_positions = find_question_positions(pdf_bytes)
+    q_regions   = _y_ranges(q_positions, page_heights)
 
     # ── 3. 題組偵測 ─────────────────────────────────
     group_map = detect_groups(filtered)
@@ -780,14 +911,16 @@ def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
         if len(stem) < 3:
             continue
 
-        # 取最長題幹，同時記錄所在頁碼
+        # 取最長題幹，同時記錄所在頁碼與 y-region（圖形定位用）
         page_of_q = line_page[q_start_idx] if q_start_idx < len(line_page) else 0
+        region    = q_regions.get(q_num)   # (page_idx, y_start, y_end) 或 None
         if q_num not in seen or len(stem) > len(seen[q_num]["question_text"]):
             seen[q_num] = {
                 "number":        q_num,
                 "question_text": stem,
                 "options":       opts if len(opts) >= 2 else None,
                 "page":          page_of_q,
+                "region":        region,
             }
 
     questions = sorted(seen.values(), key=lambda x: x["number"])
@@ -976,20 +1109,68 @@ def main():
                 print(f" ⚠  解析失敗：{e}")
                 continue
 
-            # ── 圖形提取（pymupdf）───────────────────────
+            # ── 圖形提取（pymupdf，依題目 y-region 精準定位）─
             fig_questions = [q for q in questions if q.get("has_figure")]
             n_extracted = 0
-            for q in fig_questions:
-                page_idx = q.get("page", 0)
-                # 嘗試本頁及上一頁（圖形有時在前一頁）
-                fig_name = extract_figure(
-                    pdf_bytes,
-                    [page_idx, page_idx - 1],
-                    year, subject, q["number"]
-                )
-                q["figure_image_name"] = fig_name
-                if fig_name:
-                    n_extracted += 1
+            try:
+                _doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            except Exception:
+                _doc = None
+            if _doc is not None:
+                # 題組：將同 group 中第一個圖檔共用給其他成員
+                group_first_fig: dict[str, str] = {}
+
+                # 找出每個題組的最早 y_top（用於將搜尋區域上推到題組首段）
+                group_premise_top: dict[str, tuple[int, float]] = {}
+                for q in questions:
+                    gid = q.get("group_id")
+                    if not gid:
+                        continue
+                    region = q.get("region")
+                    if not region:
+                        continue
+                    pi, ys, _ = region
+                    if (gid not in group_premise_top
+                            or (pi, ys) < group_premise_top[gid]):
+                        group_premise_top[gid] = (pi, ys)
+
+                for q in sorted(fig_questions, key=lambda x: x["number"]):
+                    region = q.get("region")
+                    if not region:
+                        q["figure_image_name"] = None
+                        continue
+                    pi, ys, ye = region
+                    gid = q.get("group_id")
+
+                    # 題組成員：先用該題自己的區域；若失敗，再嘗試
+                    # 「題組首」之前的範圍（圖通常在題組引言內）
+                    fig_name = extract_figure(_doc, q["number"],
+                                              (pi, ys, ye), year, subject)
+                    if not fig_name and gid:
+                        if gid in group_first_fig:
+                            # 直接沿用同題組的圖
+                            fig_name = group_first_fig[gid]
+                        else:
+                            # 嘗試題組引言區域：自頁首到題組首題
+                            gp_pi, gp_ys = group_premise_top[gid]
+                            fig_name = extract_figure(_doc, q["number"],
+                                                      (gp_pi, 0.0, gp_ys),
+                                                      year, subject)
+                            # 若還是沒有，試前一頁的下半部
+                            if not fig_name and gp_pi - 1 >= 0:
+                                prev_h = _doc[gp_pi - 1].rect.height
+                                fig_name = extract_figure(_doc, q["number"],
+                                                          (gp_pi - 1, prev_h * 0.4, prev_h),
+                                                          year, subject)
+                    if fig_name:
+                        n_extracted += 1
+                        if gid:
+                            group_first_fig.setdefault(gid, fig_name)
+                    q["figure_image_name"] = fig_name
+                _doc.close()
+            else:
+                for q in fig_questions:
+                    q["figure_image_name"] = None
 
             # 統計題組/表格/圖形
             n_groups  = len({q.get("group_id") for q in questions if q.get("group_id")})
