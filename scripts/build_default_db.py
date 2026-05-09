@@ -18,11 +18,15 @@ import uuid
 import sqlite3
 import requests
 import pdfplumber
+import fitz          # pymupdf — PDF 轉圖形
 from pathlib import Path
 
-OUTPUT_DIR = Path(__file__).parent / "output"
-CACHE_DIR  = Path(__file__).parent / "cache"
-DB_PATH    = OUTPUT_DIR / "exam_data.db"
+OUTPUT_DIR          = Path(__file__).parent / "output"
+CACHE_DIR           = Path(__file__).parent / "cache"
+DB_PATH             = OUTPUT_DIR / "exam_data.db"
+# 圖形輸出目錄：直接放進 iOS app 的 BundledFigures 資料夾
+BUNDLED_FIGURES_DIR = Path(__file__).parent.parent / "Exam" / "BundledFigures"
+BUNDLED_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -598,6 +602,93 @@ def has_figure_hint(text: str) -> bool:
     return bool(FIGURE_HINT_RE.search(text))
 
 # ─────────────────────────────────────────────
+# 圖形提取（pymupdf）
+# ─────────────────────────────────────────────
+
+def extract_figure(pdf_bytes: bytes, page_indices: list[int],
+                   year: int, subject: str, q_num: int) -> str | None:
+    """
+    從 PDF 的指定頁面中擷取圖形，儲存至 BUNDLED_FIGURES_DIR。
+    傳回圖檔名稱（如已存在則直接回傳），失敗回傳 None。
+    """
+    name = f"bundled_{year}_{subject}_{q_num:02d}_fig.jpg"
+    out_path = BUNDLED_FIGURES_DIR / name
+    if out_path.exists():
+        return name          # 已提取過，直接重用
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return None
+
+    # 逐頁嘗試（question 所在頁及前一頁）
+    for pi in page_indices:
+        if pi < 0 or pi >= len(doc):
+            continue
+        result = _extract_figure_from_page(doc, pi, out_path)
+        if result:
+            doc.close()
+            return name
+
+    doc.close()
+    return None
+
+
+def _extract_figure_from_page(doc, page_idx: int, out_path: Path) -> bool:
+    """在單一 PDF 頁面中定位並儲存圖形，成功回傳 True。"""
+    page      = doc[page_idx]
+    page_rect = page.rect
+
+    # 取得所有嵌入圖片的 bounding box（pt 座標）
+    imgs = page.get_image_info(hashes=False)
+
+    # 最小尺寸門檻：50×40 pt，面積 ≥ 2500 sq pt
+    MIN_W, MIN_H, MIN_AREA = 50, 40, 2500
+    meaningful = [
+        img for img in imgs
+        if img.get("bbox")
+        and (img["bbox"][2] - img["bbox"][0]) >= MIN_W
+        and (img["bbox"][3] - img["bbox"][1]) >= MIN_H
+        and (img["bbox"][2] - img["bbox"][0]) * (img["bbox"][3] - img["bbox"][1]) >= MIN_AREA
+    ]
+
+    if not meaningful:
+        return False
+
+    # 計算所有圖片的聯集 bounding box
+    x0 = min(i["bbox"][0] for i in meaningful)
+    y0 = min(i["bbox"][1] for i in meaningful)
+    x1 = max(i["bbox"][2] for i in meaningful)
+    y1 = max(i["bbox"][3] for i in meaningful)
+
+    union_area = (x1 - x0) * (y1 - y0)
+    page_area  = page_rect.width * page_rect.height
+
+    # 若聯集超過頁面 80% → 可能是背景或裝飾，跳過
+    if union_area > page_area * 0.80:
+        return False
+
+    # 加 padding (10 pt ≈ 3.5mm)
+    pad  = 10
+    clip = fitz.Rect(
+        max(0,               x0 - pad),
+        max(0,               y0 - pad),
+        min(page_rect.width,  x1 + pad),
+        min(page_rect.height, y1 + pad),
+    )
+
+    # 2× scale ≈ 144 DPI（pdf 預設 72 DPI）
+    mat = fitz.Matrix(2.0, 2.0)
+    pix = page.get_pixmap(matrix=mat, clip=clip, colorspace=fitz.csRGB, alpha=False)
+
+    # 最小像素門檻：避免儲存過小的噪音圖
+    if pix.width < 60 or pix.height < 60:
+        return False
+
+    pix.save(str(out_path), jpg_quality=88)
+    return True
+
+# ─────────────────────────────────────────────
 # 題目解析（pdfplumber 文字抽取 + 題組 + 表格 + 圖形）
 # ─────────────────────────────────────────────
 
@@ -608,24 +699,22 @@ def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
       group_id, group_premise, group_order,
       table_json, has_figure}]
     """
-    # ── 1. 逐頁取出文字與表格 ──────────────────────
-    all_lines: list[str] = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text() or ""
-            all_lines.extend(text.split("\n"))
-
-    # ── 2. 過濾無用行 ───────────────────────────────
+    # ── 1. 逐頁取出文字，同時記錄行號→頁碼對照 ────────
+    filtered: list[str] = []
+    line_page: list[int] = []          # filtered[i] 所在的 PDF 頁碼
     PAGE_NUM  = re.compile(r'^\d{1,3}$')
     SKIP_KEYS = ["請翻頁", "請聽", "作答說明", "聽力測驗"]
-    filtered: list[str] = []
-    for line in all_lines:
-        s = line.strip()
-        if not s or PAGE_NUM.match(s):
-            continue
-        if any(k in s for k in SKIP_KEYS):
-            continue
-        filtered.append(s)
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for pi, page in enumerate(pdf.pages):
+            text = page.extract_text() or ""
+            for raw_line in text.split("\n"):
+                s = raw_line.strip()
+                if not s or PAGE_NUM.match(s):
+                    continue
+                if any(k in s for k in SKIP_KEYS):
+                    continue
+                filtered.append(s)
+                line_page.append(pi)
 
     # ── 3. 題組偵測 ─────────────────────────────────
     group_map = detect_groups(filtered)
@@ -691,12 +780,14 @@ def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
         if len(stem) < 3:
             continue
 
-        # 取最長題幹
+        # 取最長題幹，同時記錄所在頁碼
+        page_of_q = line_page[q_start_idx] if q_start_idx < len(line_page) else 0
         if q_num not in seen or len(stem) > len(seen[q_num]["question_text"]):
             seen[q_num] = {
-                "number":       q_num,
+                "number":        q_num,
                 "question_text": stem,
-                "options":      opts if len(opts) >= 2 else None,
+                "options":       opts if len(opts) >= 2 else None,
+                "page":          page_of_q,
             }
 
     questions = sorted(seen.values(), key=lambda x: x["number"])
@@ -724,7 +815,7 @@ def parse_questions_from_pdf(pdf_bytes: bytes, subject: str) -> list[dict]:
         else:
             q["table_json"] = None
 
-        # 圖形標記
+        # 圖形提示（稍後在主流程中用 pymupdf 提取圖檔）
         q["has_figure"] = has_figure_hint(text)
 
     return questions
@@ -885,11 +976,26 @@ def main():
                 print(f" ⚠  解析失敗：{e}")
                 continue
 
+            # ── 圖形提取（pymupdf）───────────────────────
+            fig_questions = [q for q in questions if q.get("has_figure")]
+            n_extracted = 0
+            for q in fig_questions:
+                page_idx = q.get("page", 0)
+                # 嘗試本頁及上一頁（圖形有時在前一頁）
+                fig_name = extract_figure(
+                    pdf_bytes,
+                    [page_idx, page_idx - 1],
+                    year, subject, q["number"]
+                )
+                q["figure_image_name"] = fig_name
+                if fig_name:
+                    n_extracted += 1
+
             # 統計題組/表格/圖形
             n_groups  = len({q.get("group_id") for q in questions if q.get("group_id")})
             n_tables  = sum(1 for q in questions if q.get("table_json"))
-            n_figures = sum(1 for q in questions if q.get("has_figure"))
-            print(f" → {len(questions)} 題  題組:{n_groups}  表格:{n_tables}  有圖:{n_figures}")
+            n_hints   = len(fig_questions)
+            print(f" → {len(questions)} 題  題組:{n_groups}  表格:{n_tables}  有圖:{n_hints}(提取:{n_extracted})")
 
             # 存進 exams 表
             raw_json = json.dumps({"subject": subject, "questions": []}, ensure_ascii=False)
@@ -932,7 +1038,7 @@ def main():
                         q.get("group_premise"),
                         q.get("group_order", 0),
                         q.get("table_json"),
-                        None,  # figure_image_name: 文字解析無法取得圖片，留 NULL
+                        q.get("figure_image_name"),   # 實際圖檔名稱或 NULL
                     )
                 )
                 inserted += 1
@@ -944,10 +1050,12 @@ def main():
     total   = conn.execute("SELECT COUNT(*) FROM question_bank").fetchone()[0]
     w_pr    = conn.execute("SELECT COUNT(*) FROM question_bank WHERE pass_rate IS NOT NULL").fetchone()[0]
     w_ans   = conn.execute("SELECT COUNT(*) FROM question_bank WHERE correct_answer IS NOT NULL").fetchone()[0]
-    w_group = conn.execute("SELECT COUNT(*) FROM question_bank WHERE group_id IS NOT NULL").fetchone()[0]
-    w_table = conn.execute("SELECT COUNT(*) FROM question_bank WHERE table_json IS NOT NULL").fetchone()[0]
+    w_group  = conn.execute("SELECT COUNT(*) FROM question_bank WHERE group_id IS NOT NULL").fetchone()[0]
+    w_table  = conn.execute("SELECT COUNT(*) FROM question_bank WHERE table_json IS NOT NULL").fetchone()[0]
+    w_figure = conn.execute("SELECT COUNT(*) FROM question_bank WHERE figure_image_name IS NOT NULL").fetchone()[0]
     conn.close()
 
+    n_fig_files = len(list(BUNDLED_FIGURES_DIR.glob("bundled_*.jpg")))
     print(f"\n{'='*55}")
     print(f"🎉 完成！")
     print(f"   總題數：{total}")
@@ -955,6 +1063,7 @@ def main():
     print(f"   有答案：{w_ans}")
     print(f"   題組題：{w_group}")
     print(f"   含表格：{w_table}")
+    print(f"   有圖形：{w_figure}（圖檔 {n_fig_files} 張，位於 Exam/BundledFigures/）")
     print(f"   輸出：{DB_PATH}")
     print(f"\n下一步：")
     print(f"   cp {DB_PATH} ../exam_data.db")

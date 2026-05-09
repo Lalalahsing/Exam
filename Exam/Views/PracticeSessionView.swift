@@ -517,14 +517,27 @@ struct FigureImageView: View {
     let imageName: String
     @State private var showFullscreen = false
 
-    private var imageURL: URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    /// 依序嘗試：Documents（使用者拍照）→ Bundle/BundledFigures（預建圖形）→ Bundle 根目錄
+    private var resolvedImage: UIImage? {
+        // 1. Documents directory — 使用者上傳考卷時裁切的圖形
+        let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(imageName)
+        if let img = UIImage(contentsOfFile: docsURL.path) { return img }
+
+        // 2. App Bundle — BundledFigures 子資料夾（預建題庫圖形）
+        if let url = Bundle.main.url(forResource: imageName, withExtension: nil,
+                                     subdirectory: "BundledFigures"),
+           let img = UIImage(contentsOfFile: url.path) { return img }
+
+        // 3. App Bundle 根目錄（相容舊版資源放置方式）
+        if let url = Bundle.main.url(forResource: imageName, withExtension: nil),
+           let img = UIImage(contentsOfFile: url.path) { return img }
+
+        return nil
     }
 
     var body: some View {
-        if let url = imageURL,
-           let uiImage = UIImage(contentsOfFile: url.path) {
+        if let uiImage = resolvedImage {
             Image(uiImage: uiImage)
                 .resizable()
                 .scaledToFit()
