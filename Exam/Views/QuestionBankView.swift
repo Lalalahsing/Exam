@@ -75,12 +75,9 @@ struct QuestionBankView: View {
                         .font(.subheadline)
                     }
 
-                    // 題目列表
+                    // 題目列表（展開式：題目／選項／正解／解析）
                     ForEach(filtered) { item in
-                        Button { selectedItem = item } label: {
-                            QuestionBankRow(item: item)
-                        }
-                        .buttonStyle(.plain)
+                        QuestionBankRow(item: item) { selectedItem = item }
                     }
                     .onDelete { offsets in
                         for i in offsets {
@@ -137,43 +134,111 @@ struct QuestionBankView: View {
 
 struct QuestionBankRow: View {
     let item: QuestionBankItem
+    var onMore: () -> Void = {}
+
+    private var options: [(String, String)] {
+        [("A", item.optionA), ("B", item.optionB),
+         ("C", item.optionC), ("D", item.optionD)]
+            .compactMap { key, val in
+                guard let v = val, !v.isEmpty else { return nil }
+                return (key, v)
+            }
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            SubjectBadge(subject: item.subject, style: .compact)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.questionText)
-                    .font(.subheadline)
-                    .lineLimit(2)
-                HStack(spacing: 8) {
-                    Text("\(item.volume) 第\(item.chapterNum)章")
-                    if let yearLabel = item.yearLabel {
-                        Text(yearLabel).foregroundStyle(.blue)
-                    }
-                    if item.passRate >= 0 {
-                        Text("通過率\(Int(item.passRate * 100))%")
-                            .foregroundStyle(item.passRate >= 0.8 ? .green : item.passRate >= 0.5 ? .orange : .red)
-                    }
-                    // 原考結果標記
-                    if let correct = item.firstAttemptCorrect {
-                        Text(correct ? "原考✓" : "原考✗")
-                            .foregroundStyle(correct ? .green : .red)
-                    }
-                    if item.attemptCount > 0 {
-                        Text("練習 \(item.attemptCount) 次")
-                        if item.errorRate > 0 {
-                            Text("錯誤率 \(Int(item.errorRate * 100))%")
-                                .foregroundStyle(item.errorRate > 0.5 ? .red : .orange)
+        VStack(alignment: .leading, spacing: 10) {
+            // 標頭：科目 / 章節 / 來源 / 難度
+            HStack(spacing: 8) {
+                SubjectBadge(subject: item.subject, style: .compact)
+                Text("\(item.volume) 第\(item.chapterNum)章 \(item.chapterName)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                DifficultyBadge(difficulty: item.difficulty)
+            }
+
+            // 題目
+            Text(item.questionText)
+                .font(.subheadline)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // 選項（標出正解）
+            if !options.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(options, id: \.0) { key, text in
+                        let isCorrect = key == item.correctAnswer
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(key)
+                                .font(.caption.bold())
+                                .frame(width: 20, height: 20)
+                                .background(isCorrect ? Color.green.opacity(0.2) : Color(.systemFill))
+                                .foregroundStyle(isCorrect ? .green : .primary)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                            Text(text)
+                                .font(.caption)
+                                .foregroundStyle(isCorrect ? .green : .primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if isCorrect {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            }
                         }
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            } else if let answer = item.correctAnswer, !answer.isEmpty {
+                Label("正解：\(answer)", systemImage: "checkmark.circle.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(.green)
             }
-            Spacer()
-            DifficultyBadge(difficulty: item.difficulty)
+
+            // 深度解析
+            if !item.explanation.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("解析", systemImage: "lightbulb.fill")
+                        .font(.caption.bold())
+                        .foregroundStyle(.orange)
+                    Text(item.explanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            }
+
+            // 中繼資訊：來源／通過率／原考結果／練習統計
+            HStack(spacing: 10) {
+                if let yearLabel = item.yearLabel {
+                    Text(yearLabel).foregroundStyle(.blue)
+                }
+                if item.passRate >= 0 {
+                    Text("通過率 \(Int(item.passRate * 100))%")
+                        .foregroundStyle(item.passRate >= 0.8 ? .green : item.passRate >= 0.5 ? .orange : .red)
+                }
+                if let correct = item.firstAttemptCorrect {
+                    Text(correct ? "原考 ✓" : "原考 ✗")
+                        .foregroundStyle(correct ? .green : .red)
+                }
+                if item.attemptCount > 0 {
+                    Text("練習 \(item.attemptCount) 次")
+                    if item.errorRate > 0 {
+                        Text("錯誤率 \(Int(item.errorRate * 100))%")
+                            .foregroundStyle(item.errorRate > 0.5 ? .red : .orange)
+                    }
+                }
+                Spacer()
+                if item.figureImageName != nil || item.decodedTable != nil {
+                    Button("查看圖表", action: onMore)
+                        .font(.caption2.bold())
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 }
 
