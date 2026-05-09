@@ -536,20 +536,36 @@ struct FigureImageView: View {
         return nil
     }
 
+    /// 高度上限；瘦高圖以高度為基準回推寬度，避免被拉滿欄位
+    private static let maxDisplayHeight: CGFloat = 320
+
+    private func displayWidth(for image: UIImage) -> CGFloat? {
+        let size = image.size
+        guard size.height > 0, size.width > 0 else { return nil }
+        let aspect = size.width / size.height
+        // 直幅 (w<h) 才回傳實際對應寬度；橫幅就讓它依欄位寬度撐滿
+        return aspect < 1 ? Self.maxDisplayHeight * aspect : nil
+    }
+
     var body: some View {
         if let uiImage = resolvedImage {
-            Image(uiImage: uiImage)
-                .resizable()
-                .scaledToFit()
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
-                )
-                .onTapGesture { showFullscreen = true }
-                .fullScreenCover(isPresented: $showFullscreen) {
-                    FullscreenImageView(uiImage: uiImage, onDismiss: { showFullscreen = false })
-                }
+            HStack {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: displayWidth(for: uiImage),
+                           maxHeight: Self.maxDisplayHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                    )
+                    .onTapGesture { showFullscreen = true }
+                Spacer(minLength: 0)
+            }
+            .fullScreenCover(isPresented: $showFullscreen) {
+                FullscreenImageView(uiImage: uiImage, onDismiss: { showFullscreen = false })
+            }
         }
     }
 }
