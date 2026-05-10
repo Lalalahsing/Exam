@@ -54,6 +54,11 @@ struct MainTabView: View {
             .tabItem { Label("成效", systemImage: "chart.bar.fill") }
 
             NavigationStack {
+                ExamFocusView()
+            }
+            .tabItem { Label("重點", systemImage: "scope") }
+
+            NavigationStack {
                 SettingsView()
             }
             .tabItem { Label("設定", systemImage: "gear") }
